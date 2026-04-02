@@ -71,7 +71,7 @@ With our taxonomy in place, we can design three complementary lifecycle policies
 
 The simplest policy: automatically delete memories older than a configured time-to-live (TTL). We default to 90 days, which works well as a starting point for episodic memories in customer-facing agents. This is a blunt instrument — it does not consider whether a memory is still useful — but it provides a hard ceiling on memory accumulation and is essential for compliance.
 
-In production, we recommend differentiating TTL by memory type. Episodic memories (session transcripts, resolved tickets) might expire after 30–60 days. Semantic memories (user preferences, distilled facts) could last 6–12 months. Procedural memories (learned workflows) may never expire via TTL at all — they are too valuable and too rare. The implementation in this post uses a single configurable TTL as a baseline; extending it to per-type policies is a natural next step.
+In production, you will likely want to differentiate TTL by memory type. For example, episodic memories (session transcripts, resolved tickets) might expire after 30–60 days, semantic memories (user preferences, distilled facts) could last 6–12 months, and procedural memories (learned workflows) might warrant no TTL at all given their rarity and value. The code in this post delivers a single configurable `memoryTtlDays` parameter as a starting point — adding per-type TTL logic (by filtering on a `memory_type` tag before pruning) is a straightforward extension we leave as an exercise.
 
 TTL expiration runs first in our workflow, before any scoring or consolidation. This ensures we never waste compute evaluating memories that should already be gone.
 
@@ -289,7 +289,7 @@ npx cdk deploy \
 
 ### Cost Considerations
 
-The primary cost driver in this architecture is the Amazon Bedrock invocations during the consolidation step. Each batch of memories sent to Claude 3 Sonnet incurs input and output token charges. For an agent with 1,000 memories where 20% score below the threshold, you would see roughly 20 Bedrock invocations per nightly run (at a batch size of 10). For agents with tens of thousands of memories, consolidation costs can grow meaningfully — we recommend starting with a higher relevance threshold (e.g., 0.4) to limit the number of memories entering consolidation, and lowering it as you gain confidence in the workflow. The remaining components — Lambda, Step Functions, EventBridge, and CloudWatch — contribute minimal cost at typical memory volumes. Review [Amazon Bedrock pricing](https://aws.amazon.com/bedrock/pricing/) to estimate costs for your specific workload.
+The primary cost driver in this architecture is the Amazon Bedrock invocations during the consolidation step. Each batch of memories sent to Claude 3 Sonnet incurs input and output token charges. To put this in perspective: for an agent with 1,000 memories where 20% score below the threshold, you would see roughly 20 Bedrock invocations per nightly run (at a batch size of 10). If each batch averages 2,000 input tokens and 500 output tokens, that works out to approximately $0.01–$0.02 per run — negligible. But at 100,000 memories with the same 20% below threshold, you are looking at 2,000 invocations nightly, which could reach $50–$100/month depending on memory content length. We recommend starting with a higher relevance threshold (e.g., 0.4) to limit the number of memories entering consolidation, and lowering it as you gain confidence in the workflow. The remaining components — Lambda, Step Functions, EventBridge, and CloudWatch — contribute minimal cost at typical memory volumes. Review [Amazon Bedrock pricing](https://aws.amazon.com/bedrock/pricing/) to estimate costs for your specific workload.
 
 ## Testing Memory Quality
 
@@ -332,7 +332,9 @@ def determine_pass_fail(test_case: RegressionTestCase) -> RegressionTestCase:
 
 ### AgentCore Evaluations Integration
 
-The regression suite integrates with [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) Evaluations to compute quality scores programmatically. Rather than relying on manual review, we use the Evaluations API to score each agent response against the expected criteria. This makes the regression suite fully automated and suitable for CI/CD pipelines — run it after every change to your lifecycle policies to catch quality regressions before they reach production.
+The regression suite integrates with [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) Evaluations to compute quality scores programmatically. AgentCore Evaluations works as an LLM-as-judge system: you provide the agent's response and a set of human-defined criteria (like "Response mentions specific languages previously discussed"), and the service returns a normalized quality score between 0.0 and 1.0 indicating how well the response satisfies those criteria. A score of 0.7 means the response met roughly 70% of the specified criteria — useful as a relative measure, though the exact threshold you set should be calibrated against your own quality expectations through a few manual runs.
+
+Rather than relying on manual review, we use the Evaluations API to score each agent response against the expected criteria. This makes the regression suite fully automated and suitable for CI/CD pipelines — run it after every change to your lifecycle policies to catch quality regressions before they reach production.
 
 ## Privacy and Compliance
 
