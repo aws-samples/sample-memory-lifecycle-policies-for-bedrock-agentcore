@@ -1,0 +1,23 @@
+{
+  "app": "npx ts-node --prefer-ts-exts bin/app.ts",
+  "watch": {
+    "include": ["**"],
+    "exclude": [
+      "README.md",
+      "cdk*.json",
+      "**/*.d.ts",
+      "**/*.js",
+      "tsconfig.json",
+      "package*.json",
+      "yarn.lock",
+      "node_modules",
+      "test"
+    ]
+  },
+  "context": {
+    "memoryTtlDays": 90,
+    "relevanceThreshold": 0.3,
+    "consolidationBatchSize": 10,
+    "bedrockModelId": "anthropic.claude-3-sonnet-20240229-v1:0"
+  }
+}
