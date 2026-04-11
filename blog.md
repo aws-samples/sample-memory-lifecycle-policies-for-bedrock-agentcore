@@ -1,73 +1,50 @@
-# The Forgetting Problem: Designing Memory Lifecycle Policies for Long-Running AgentCore Agents
-
-*How to keep your AI agents sharp by teaching them when — and how — to forget.*
-
----
+# Designing memory lifecycle policies for Amazon Bedrock AgentCore
 
 ## Introduction
 
-Every conversation your AI agent has generates memories. User preferences, past interactions, resolved support tickets, learned workflows — they all accumulate in [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) Memory. At first, this is a superpower. Your agent recalls that a customer prefers Python over Java, remembers the deployment issue from last Tuesday, and knows which runbook to follow for a database failover.
+Memory lifecycle policies help long-running AI agents stay effective by systematically managing what they remember and what they forget. Every conversation your agent has generates memories — user preferences, past interactions, resolved support tickets, learned workflows — and they all accumulate in [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) Memory. At first, this is useful. Your agent recalls that a customer prefers Python over Java, remembers the deployment issue from last Tuesday, and knows which runbook to follow for a database failover.
 
-But what happens after six months of production use?
+After six months of production use, problems emerge.
 
-We watched a customer support agent confidently reference a billing dispute that had been resolved four months earlier — treating it as an active issue and confusing the customer. The agent wasn't hallucinating. It was *remembering too much*. The resolved ticket was still sitting in memory, indistinguishable from current context. The agent's memory had become a liability.
+We observed a customer support agent reference a billing dispute that had been resolved four months earlier, treating it as an active issue. The agent was not hallucinating — it was retrieving a stale memory that was still in its context window, indistinguishable from current information. The agent's memory had become a problem.
 
-This is the forgetting problem. Agents that remember everything eventually drown in irrelevant context. Outdated memories pollute the retrieval window, push token costs higher as context grows, and create compliance risks when stale personal data lingers past its useful life. Every blog post about agent memory focuses on storage and retrieval — but none address the equally critical question of *when and how to forget*.
+This is the forgetting problem. Agents that remember everything eventually accumulate irrelevant context. Outdated memories pollute the retrieval window, push token costs higher as context grows, and create compliance risks when stale personal data lingers past its useful life. Most guidance on agent memory focuses on storage and retrieval — but the equally important question is *when and how to forget*.
 
-In this post, we introduce memory lifecycle management for AI agents — the practice of systematically scoring, consolidating, and pruning agent memories over time (sometimes called memory hygiene). We borrow from database lifecycle patterns but adapt them for the unique challenges of LLM-consumed context. We walk through a production-ready architecture using [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) Memory, [AWS Step Functions](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html), and [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) to periodically score, consolidate, and prune agent memories. By the end, you will have a deployable CDK stack that runs a nightly lifecycle workflow — and a framework for thinking about agent memory as a managed resource, not an append-only log.
+In this post, we introduce memory lifecycle management for AI agents — the practice of systematically scoring, consolidating, and pruning agent memories over time (sometimes called memory hygiene). We borrow from database lifecycle patterns but adapt them for the unique challenges of LLM-consumed context. We walk through a deployable architecture using [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) Memory, [AWS Step Functions](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html), and [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) to periodically score, consolidate, and prune agent memories. By the end, you will have a deployable CDK stack that runs a nightly lifecycle workflow — and a framework for thinking about agent memory as a managed resource, not an append-only log.
 
-## Who Should Use This
+Not every agent needs aggressive memory lifecycle management. This solution is designed for agents that accumulate high volumes of interaction data over weeks or months — customer support agents, sales advisors, IT helpdesk bots, and similar high-throughput use cases. If your agent handles hundreds of conversations per day, memory bloat will become a problem. For low-volume agents — personal assistants with a single user, or agents that rely on long-term historical context (e.g., healthcare or legal advisors) — you may want to start with TTL expiration and GDPR compliance only, and skip aggressive scoring and consolidation. All thresholds in this solution are configurable, so you can dial them to match your agent's needs.
 
-Not every agent needs aggressive memory lifecycle management. This solution is designed for agents that accumulate high volumes of interaction data over weeks or months — customer support agents, sales advisors, IT helpdesk bots, and similar high-throughput use cases. If your agent handles hundreds of conversations per day, memory bloat will become a problem.
+## Solution overview
 
-For low-volume agents — personal assistants with a single user, or agents that rely on long-term historical context (e.g., healthcare or legal advisors) — you may want to start with TTL expiration and GDPR compliance only, and skip aggressive scoring and consolidation. All thresholds in this solution are configurable, so you can dial them to match your agent's needs.
+This section covers the three types of agent memory and the lifecycle policies that manage them, followed by the architecture that ties everything together.
 
-## Prerequisites
-
-Before deploying the solution, make sure you have the following:
-
-- An [AWS account](https://aws.amazon.com/account/) with permissions to create Lambda functions, Step Functions state machines, EventBridge rules, SNS topics, CloudWatch dashboards, CloudTrail trails, and S3 buckets
-- [AWS CDK v2](https://docs.aws.amazon.com/cdk/v2/guide/home.html) installed (`npm install -g aws-cdk`)
-- [Node.js](https://nodejs.org/) 18+ and npm
-- [Python 3.12](https://www.python.org/downloads/) with pip
-- [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) model access enabled for Claude 3 Sonnet (`anthropic.claude-3-sonnet-20240229-v1:0`) in your target region
-- [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) with at least one agent configured with memory enabled
-- AWS CLI configured with appropriate credentials
-
-Clone the repository and install dependencies:
-
-```bash
-cd code
-npm install
-```
-
-## A Taxonomy of Agent Memory
+### Memory types
 
 Before we can design lifecycle policies, we need a shared vocabulary for what agents actually remember. Not all memories are created equal, and different types demand different retention strategies. We categorize agent memory into three types, each mapping to capabilities in [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) Memory.
 
-### Episodic Memory
+#### Episodic Memory
 
 Episodic memories capture *what happened* — the raw record of past conversations and interactions. "The user asked about S3 pricing on March 12th." "We troubleshot a Lambda cold start issue last week." These are timestamped, session-bound, and high-volume. They are the most likely to become stale and the first candidates for expiration.
 
-In AgentCore Memory, episodic memories are stored as individual entries tied to specific agent-user sessions. They are valuable for short-term continuity ("As we discussed earlier...") but lose relevance quickly as conversations move on.
+AgentCore Memory stores episodic memories as individual entries tied to specific agent-user sessions. They provide short-term continuity ("As we discussed earlier...") but lose relevance quickly as conversations move on.
 
-### Semantic Memory
+#### Semantic Memory
 
 Semantic memories are *distilled facts and preferences* — knowledge extracted from interactions but decoupled from any single conversation. "The user prefers us-east-1 for deployments." "Their team uses Terraform, not CloudFormation." These are durable, high-value, and compact.
 
 Semantic memories are what make an agent feel like it truly knows the user. They should be retained longer than episodic memories and are prime candidates for consolidation — merging multiple episodic observations into a single, authoritative fact.
 
-### Procedural Memory
+#### Procedural Memory
 
 Procedural memories encode *learned workflows and tool-use patterns*. "When the user asks about costs, query the Cost Explorer API first, then summarize." "For deployment issues, always check the CloudFormation stack events before suggesting fixes." These represent the agent's operational expertise.
 
 Procedural memories are the rarest and most valuable type. They should have the longest retention and the highest bar for pruning. Losing a procedural memory means the agent forgets *how* to do something, not just *what* happened.
 
-## Designing Memory Lifecycle Policies
+### Lifecycle policies
 
 With our taxonomy in place, we can design three complementary lifecycle policies. Each targets a different failure mode of unbounded memory.
 
-### Policy 1: TTL-Based Expiration
+#### Policy 1: TTL-Based Expiration
 
 The simplest policy: automatically delete memories older than a configured time-to-live (TTL). We default to 90 days, which works well as a starting point for episodic memories in customer-facing agents. This is a blunt instrument — it does not consider whether a memory is still useful — but it provides a hard ceiling on memory accumulation and is essential for compliance.
 
@@ -75,7 +52,7 @@ In production, you will likely want to differentiate TTL by memory type. For exa
 
 TTL expiration runs first in our workflow, before any scoring or consolidation. This ensures we never waste compute evaluating memories that should already be gone.
 
-### Policy 2: Relevance Decay Scoring
+#### Policy 2: Relevance Decay Scoring
 
 Not all memories age at the same rate. A memory accessed yesterday is more relevant than one untouched for weeks, regardless of when it was created. We score each memory using a weighted decay formula that combines three signals:
 
@@ -116,11 +93,11 @@ def compute_relevance_score(
     return score
 ```
 
-### Policy 3: LLM-Based Consolidation
+#### Policy 3: LLM-Based Consolidation
 
 Before we prune low-scoring memories, we give them one last chance. Consolidation uses [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) to summarize and merge related memories into a single, compact semantic entry. Five episodic memories about a user's deployment preferences become one authoritative semantic memory: "User prefers blue/green deployments to us-east-1 using CDK with Python."
 
-This is meta-cognition — an LLM reasoning about its own memories. The consolidation prompt instructs the model to preserve essential facts, remove redundancy, and output a confidence score:
+In this step, an LLM summarizes its own memories. The consolidation prompt instructs the model to preserve essential facts, remove redundancy, and output a confidence score:
 
 ```python
 CONSOLIDATION_PROMPT_TEMPLATE = """You are a memory consolidation assistant.
@@ -137,15 +114,13 @@ Output a JSON object with:
 - "key_facts": list of preserved key facts"""
 ```
 
-The consolidated memory is stored back in AgentCore Memory with provenance tags — `consolidated: true`, a `confidence_score`, and a `source_memories` list linking back to the originals. After successful storage, the original memories are deleted. If Bedrock fails, we retain all originals unchanged. If some deletions fail after consolidation, we log the orphaned memory IDs for manual review.
+The system stores the consolidated memory back in AgentCore Memory with provenance tags — `consolidated: true`, a `confidence_score`, and a `source_memories` list linking back to the originals. After successful storage, it deletes the original memories. If Bedrock fails, we retain all originals unchanged. If some deletions fail after consolidation, we log the orphaned memory IDs for manual review.
 
 A word of caution: consolidation is lossy by nature. An LLM summarizing five memories into one will inevitably drop some nuance. For example, "User prefers blue/green deployments but switched away from canary releases after a 2023 outage" might consolidate to simply "User prefers blue/green deployments" — losing the context about *why*. The `confidence_score` helps flag low-quality consolidations, and the `source_memories` tag preserves a link to the originals for auditability. For high-stakes domains, consider setting a confidence threshold (e.g., 0.8) below which consolidations are flagged for human review rather than auto-applied. You could also archive original memories to cold storage (such as [Amazon S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html) Glacier) instead of deleting them, providing a recovery path if consolidation loses critical context.
 
-## Implementation with AgentCore Memory + Step Functions
+### Architecture diagram
 
-We orchestrate the entire lifecycle as a nightly [AWS Step Functions](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html) workflow triggered by [Amazon EventBridge](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-what-is.html). The workflow runs four stages in sequence: TTL expiration, scoring, consolidation, and pruning.
-
-### Architecture Overview
+The following diagram shows the nightly lifecycle workflow architecture.
 
 ```mermaid
 graph TB
@@ -188,6 +163,8 @@ graph TB
     SF -->|execution metrics| CW
 ```
 
+**Text description for accessibility:** An EventBridge rule triggers a Step Functions state machine nightly. The state machine invokes four Lambda functions in sequence: Memory Pruner (TTL expiration), Memory Scorer (relevance scoring), Memory Consolidator (LLM-based merging via Bedrock), and Memory Pruner again (final pruning). All functions interact with AgentCore Memory. Failures route to an SNS topic for alerts. All functions emit structured logs to CloudWatch, and CloudTrail records API-level audit logs.
+
 The workflow proceeds as follows:
 
 1. **TTL Expiration** — The Memory Pruner deletes all memories older than the configured TTL (default: 90 days). This runs first so we never score or consolidate memories that should already be gone.
@@ -197,9 +174,32 @@ The workflow proceeds as follows:
 
 If any step fails, a Catch block routes to a failure handler that publishes the step name and error details to an [Amazon SNS](https://docs.aws.amazon.com/sns/latest/dg/welcome.html) topic. Each task state includes retry configuration with exponential backoff (max 2 attempts, 5-second initial interval, 2x backoff rate) for transient errors.
 
+## Prerequisites
+
+Before deploying the solution, make sure you have the following:
+
+- An [AWS account](https://aws.amazon.com/account/) with permissions to create Lambda functions, Step Functions state machines, EventBridge rules, SNS topics, CloudWatch dashboards, CloudTrail trails, and S3 buckets
+- [AWS CDK v2](https://docs.aws.amazon.com/cdk/v2/guide/home.html) installed (`npm install -g aws-cdk`)
+- [Node.js](https://nodejs.org/) 18+ and npm
+- [Python 3.12](https://www.python.org/downloads/) with pip
+- [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) model access enabled for Claude 3 Sonnet (`anthropic.claude-3-sonnet-20240229-v1:0`) in your target region
+- [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) with at least one agent configured with memory enabled
+- AWS CLI configured with appropriate credentials
+
+Clone the repository and install dependencies:
+
+```bash
+cd code
+npm install
+```
+
+## Solution walkthrough
+
+We orchestrate the entire lifecycle as a nightly [AWS Step Functions](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html) workflow triggered by [Amazon EventBridge](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-what-is.html). The workflow runs four stages in sequence: TTL expiration, scoring, consolidation, and pruning.
+
 ### CDK Stack Walkthrough
 
-The entire infrastructure is defined in a single CDK stack (`code/lib/memory-lifecycle-stack.ts`). Let's walk through the key sections.
+A single CDK stack (`code/lib/memory-lifecycle-stack.ts`) defines the entire infrastructure. Here are the key sections.
 
 **Lambda function definitions** — Each handler gets its own function with Python 3.12 runtime and least-privilege IAM permissions. All four functions receive the configurable parameters as environment variables:
 
@@ -248,7 +248,7 @@ memoryConsolidatorFn.addToRolePolicy(new iam.PolicyStatement({
 }));
 ```
 
-**Step Functions workflow** — The state machine is defined inline using CDK constructs. The workflow chains TTL expiration → scoring → a Choice state that checks for low-score memories → batch consolidation (using a Map state) → pruning → metrics emission:
+**Step Functions workflow** — CDK constructs define the state machine inline. The workflow chains TTL expiration → scoring → a Choice state that checks for low-score memories → batch consolidation (using a Map state) → pruning → metrics emission:
 
 ```typescript
 const definition = ttlExpiration
@@ -291,11 +291,11 @@ npx cdk deploy \
 
 The primary cost driver in this architecture is the Amazon Bedrock invocations during the consolidation step. Each batch of memories sent to Claude 3 Sonnet incurs input and output token charges. To put this in perspective: for an agent with 1,000 memories where 20% score below the threshold, you would see roughly 20 Bedrock invocations per nightly run (at a batch size of 10). If each batch averages 2,000 input tokens and 500 output tokens, that works out to approximately $0.01–$0.02 per run — negligible. But at 100,000 memories with the same 20% below threshold, you are looking at 2,000 invocations nightly, which could reach $50–$100/month depending on memory content length. We recommend starting with a higher relevance threshold (e.g., 0.4) to limit the number of memories entering consolidation, and lowering it as you gain confidence in the workflow. The remaining components — Lambda, Step Functions, EventBridge, and CloudWatch — contribute minimal cost at typical memory volumes. Review [Amazon Bedrock pricing](https://aws.amazon.com/bedrock/pricing/) to estimate costs for your specific workload.
 
-## Testing Memory Quality
+### Testing memory quality
 
 Pruning and consolidation are only useful if the agent still answers correctly afterward. We need a way to measure whether memory lifecycle operations degrade response quality. We approach this with two complementary strategies.
 
-### Memory Regression Test Suite
+#### Memory Regression Test Suite
 
 We define test cases as question-and-criteria pairs (`code/test/test_regression_suite.py`). Each test case specifies a question, the criteria the agent's response should satisfy, and a minimum quality score:
 
@@ -330,17 +330,17 @@ def determine_pass_fail(test_case: RegressionTestCase) -> RegressionTestCase:
     return test_case
 ```
 
-### AgentCore Evaluations Integration
+#### AgentCore Evaluations Integration
 
 The regression suite integrates with [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) Evaluations to compute quality scores programmatically. AgentCore Evaluations works as an LLM-as-judge system: you provide the agent's response and a set of human-defined criteria (like "Response mentions specific languages previously discussed"), and the service returns a normalized quality score between 0.0 and 1.0 indicating how well the response satisfies those criteria. A score of 0.7 means the response met roughly 70% of the specified criteria — useful as a relative measure, though the exact threshold you set should be calibrated against your own quality expectations through a few manual runs.
 
 Rather than relying on manual review, we use the Evaluations API to score each agent response against the expected criteria. This makes the regression suite fully automated and suitable for CI/CD pipelines — run it after every change to your lifecycle policies to catch quality regressions before they reach production.
 
-## Privacy and Compliance
+### Privacy and compliance
 
 Memory lifecycle management is not just about performance — it is a compliance requirement. When your agent stores personal data in memory, you inherit obligations under regulations like GDPR.
 
-### GDPR Right-to-Be-Forgotten
+#### GDPR Right-to-Be-Forgotten
 
 We implement a dedicated GDPR Deletion Handler (`code/lambdas/gdpr_deletion/handler.py`) that deletes all memories associated with a specific user across all agents. When invoked with a `user_id`, it lists every memory for that user in [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) Memory and deletes them one by one, continuing even if individual deletions fail:
 
@@ -380,9 +380,9 @@ def handler(event: dict, context) -> dict:
 
 The handler returns a confirmation with the count of deleted memories and any failed IDs. On partial failure, the response includes the failed memory identifiers so operators can investigate and retry.
 
-### Audit Logging with CloudTrail
+#### Audit Logging with CloudTrail
 
-Every memory mutation — scoring, consolidation, pruning, and GDPR deletion — is logged as structured JSON to [Amazon CloudWatch](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/WhatIsCloudWatchLogs.html) Logs. Each log entry includes the action type, memory ID, relevant identifiers (agent ID or user ID), and an ISO 8601 timestamp.
+Every memory mutation — scoring, consolidation, pruning, and GDPR deletion — produces structured JSON logs in [Amazon CloudWatch](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/WhatIsCloudWatchLogs.html) Logs. Each log entry includes the action type, memory ID, relevant identifiers (agent ID or user ID), and an ISO 8601 timestamp.
 
 For deeper audit requirements, the CDK stack configures [AWS CloudTrail](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-user-guide.html) to log all AgentCore Memory API calls. This provides an immutable audit trail of every memory read, write, and delete operation — essential for demonstrating compliance during audits.
 
@@ -398,7 +398,7 @@ new cloudtrail.Trail(this, 'MemoryLifecycleTrail', {
 
 The stack also creates an [Amazon CloudWatch](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/WhatIsCloudWatch.html) dashboard that displays memory lifecycle metrics at a glance: memories processed, consolidated, pruned, and workflow execution status. This gives operators real-time visibility into how the lifecycle policies are performing.
 
-## Clean Up
+## Clean up
 
 To remove all resources created by this solution, run:
 
@@ -409,19 +409,14 @@ npx cdk destroy
 
 This tears down the Step Functions state machine, all Lambda functions, the EventBridge rule, the SNS topic, the CloudWatch dashboard, the CloudTrail trail, and the S3 bucket used for trail logs. Note that CloudWatch log groups created by Lambda executions may need to be deleted separately if you want a complete cleanup.
 
-## Conclusion and Next Steps
+## Conclusion
 
-Agent memory is a managed resource, not an append-only log. Without lifecycle policies, your agents will slowly degrade — drowning in outdated context, burning tokens on irrelevant memories, and holding onto personal data longer than they should.
+We showed how to build memory lifecycle policies for [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) agents using [AWS Step Functions](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html) and [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html). The solution applies three complementary policies — TTL expiration for hard time limits, relevance decay scoring for intelligent prioritization, and LLM-based consolidation for preserving knowledge in compact form. We also covered how to test that pruning does not degrade agent quality, and how to handle GDPR compliance at the memory layer.
 
-In this post, we built a complete memory lifecycle solution using [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) Memory, [AWS Step Functions](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html), and [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html). We covered three complementary policies — TTL expiration for hard time limits, relevance decay scoring for intelligent prioritization, and LLM-based consolidation for preserving knowledge in compact form. We showed how to test that pruning does not degrade agent quality, and how to handle GDPR compliance at the memory layer.
+The full code is available in the `/code` directory of this repository. Deploy it with `npx cdk deploy` and start running nightly memory lifecycle management for your agents.
 
-The full code is available in the `/code` directory of this repository. Deploy it with `npx cdk deploy` and start running nightly memory lifecycle management for your agents today.
+To learn more, see the [Amazon Bedrock AgentCore documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html), the [AWS Step Functions developer guide](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html), and the [Amazon Bedrock user guide](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html).
 
-Here are some directions to explore next:
+## About the authors
 
-- **Per-memory-type policies** — Apply different TTLs and thresholds to episodic, semantic, and procedural memories. Procedural memories might never expire, while episodic memories could have a 30-day TTL.
-- **Adaptive thresholds** — Use the regression test suite results to automatically adjust the relevance threshold. If quality drops after a lifecycle run, raise the threshold; if memory bloat increases, lower it.
-- **Real-time scoring** — Instead of nightly batch processing, score memories at write time and consolidate on-demand when the memory store exceeds a size limit.
-- **Multi-agent memory sharing** — Extend the consolidation step to merge memories across agents that serve the same user, creating a unified user profile.
-
-Teaching your agents to forget is just as important as teaching them to remember. Start with the architecture in this post, tune the thresholds for your workload, and let your agents stay sharp.
+**Jane Doe** is a Senior Solutions Architect at AWS, where she helps customers design and build AI-powered applications. She specializes in agent architectures, memory systems, and serverless orchestration patterns.
