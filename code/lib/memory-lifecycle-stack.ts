@@ -26,6 +26,7 @@ export class MemoryLifecycleStack extends cdk.Stack {
     const bedrockModelId =
       this.node.tryGetContext('bedrockModelId') ??
       'anthropic.claude-3-sonnet-20240229-v1:0';
+    const pruneDays = this.node.tryGetContext('pruneDays') ?? 45;
 
     // ---------------------
     // Lambda Functions
@@ -40,6 +41,7 @@ export class MemoryLifecycleStack extends cdk.Stack {
         RELEVANCE_THRESHOLD: String(relevanceThreshold),
         CONSOLIDATION_BATCH_SIZE: String(consolidationBatchSize),
         BEDROCK_MODEL_ID: bedrockModelId,
+        PRUNE_DAYS: String(pruneDays),
       },
     });
 
@@ -53,6 +55,7 @@ export class MemoryLifecycleStack extends cdk.Stack {
         RELEVANCE_THRESHOLD: String(relevanceThreshold),
         CONSOLIDATION_BATCH_SIZE: String(consolidationBatchSize),
         BEDROCK_MODEL_ID: bedrockModelId,
+        PRUNE_DAYS: String(pruneDays),
       },
     });
 
@@ -66,6 +69,7 @@ export class MemoryLifecycleStack extends cdk.Stack {
         RELEVANCE_THRESHOLD: String(relevanceThreshold),
         CONSOLIDATION_BATCH_SIZE: String(consolidationBatchSize),
         BEDROCK_MODEL_ID: bedrockModelId,
+        PRUNE_DAYS: String(pruneDays),
       },
     });
 
@@ -79,6 +83,7 @@ export class MemoryLifecycleStack extends cdk.Stack {
         RELEVANCE_THRESHOLD: String(relevanceThreshold),
         CONSOLIDATION_BATCH_SIZE: String(consolidationBatchSize),
         BEDROCK_MODEL_ID: bedrockModelId,
+        PRUNE_DAYS: String(pruneDays),
       },
     });
 

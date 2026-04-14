@@ -18,7 +18,11 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 
 # Add shared module to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from shared.constants import DECAY_RATE, MAX_ACCESS_BASELINE, W_ACCESS, W_FREQUENCY, W_RECENCY
+from shared.constants import (
+    PRUNE_DAYS_DEFAULT,
+    RELEVANCE_THRESHOLD_DEFAULT,
+    decay_rate_from_prune_days,
+)
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -27,25 +31,23 @@ logger.setLevel(logging.INFO)
 def compute_relevance_score(
     created_at: datetime,
     last_accessed_at: datetime,
-    access_count: int,
+    decay_rate: float,
     now: datetime,
 ) -> float:
-    """Compute relevance score using the weighted decay formula.
+    """Compute relevance score using the 2-term decay formula.
 
-    score = W_RECENCY * exp(-DECAY_RATE * days_since_creation)
-          + W_ACCESS  * exp(-DECAY_RATE * days_since_last_access)
-          + W_FREQUENCY * min(access_count / MAX_ACCESS_BASELINE, 1.0)
+    score = 0.5 * exp(-decay_rate * days_since_creation)
+          + 0.5 * exp(-decay_rate * days_since_last_access)
 
     Returns a float in [0.0, 1.0].
     """
     days_since_creation = max((now - created_at).total_seconds() / 86400, 0.0)
     days_since_last_access = max((now - last_accessed_at).total_seconds() / 86400, 0.0)
 
-    recency_factor = math.exp(-DECAY_RATE * days_since_creation)
-    access_factor = math.exp(-DECAY_RATE * days_since_last_access)
-    frequency_factor = min(access_count / MAX_ACCESS_BASELINE, 1.0)
+    recency_factor = math.exp(-decay_rate * days_since_creation)
+    access_factor = math.exp(-decay_rate * days_since_last_access)
 
-    score = W_RECENCY * recency_factor + W_ACCESS * access_factor + W_FREQUENCY * frequency_factor
+    score = 0.5 * recency_factor + 0.5 * access_factor
     return score
 
 
@@ -69,7 +71,11 @@ def handler(event: dict, context) -> dict:
         }
     """
     agent_id = event["agent_id"]
-    relevance_threshold = event["relevance_threshold"]
+    relevance_threshold = float(os.environ.get(
+        "RELEVANCE_THRESHOLD", str(RELEVANCE_THRESHOLD_DEFAULT)
+    ))
+    prune_days = int(os.environ.get("PRUNE_DAYS", str(PRUNE_DAYS_DEFAULT)))
+    decay_rate = decay_rate_from_prune_days(prune_days, relevance_threshold)
     now = datetime.now(timezone.utc)
 
     logger.info(json.dumps({
@@ -108,9 +114,8 @@ def handler(event: dict, context) -> dict:
         memory_id = memory["memoryId"]
         created_at = datetime.fromisoformat(memory["createdAt"])
         last_accessed_at = datetime.fromisoformat(memory["lastAccessedAt"])
-        access_count = memory.get("accessCount", 0)
 
-        score = compute_relevance_score(created_at, last_accessed_at, access_count, now)
+        score = compute_relevance_score(created_at, last_accessed_at, decay_rate, now)
         scored_at = now.isoformat()
 
         # Tag the memory with its relevance score and scoring timestamp

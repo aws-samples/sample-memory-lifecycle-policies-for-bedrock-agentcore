@@ -16,7 +16,6 @@ class AgentMemory:
     memory_type: str  # "episodic" | "semantic" | "procedural"
     created_at: datetime
     last_accessed_at: datetime
-    access_count: int
     tags: dict = field(default_factory=dict)
 
 
