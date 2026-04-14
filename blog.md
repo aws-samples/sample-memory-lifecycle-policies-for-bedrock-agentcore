@@ -54,18 +54,38 @@ TTL expiration runs first in our workflow, before any scoring or consolidation. 
 
 #### Policy 2: Relevance Decay Scoring
 
-Not all memories age at the same rate. A memory accessed yesterday is more relevant than one untouched for weeks, regardless of when it was created. We score each memory using a weighted decay formula that combines three signals:
+Not all memories age at the same rate. A memory accessed yesterday is more relevant than one untouched for weeks, regardless of when it was created. We score each memory using a decay formula that combines two time-based signals with equal weights — creation recency and last-access recency:
 
 ```python
-score = (W_RECENCY * exp(-DECAY_RATE * days_since_creation)
-       + W_ACCESS  * exp(-DECAY_RATE * days_since_last_access)
-       + W_FREQUENCY * min(access_count / MAX_ACCESS_BASELINE, 1.0))
+score = 0.5 * exp(-decay_rate * days_since_creation) + 0.5 * exp(-decay_rate * days_since_last_access)
 ```
 
+Rather than asking operators to reason about a raw decay constant, we expose a single intuitive parameter: `pruneDays` — the approximate number of days after which an unaccessed memory's score drops below the relevance threshold. The underlying `decay_rate` is derived automatically:
 
-With weights `W_RECENCY = 0.4`, `W_ACCESS = 0.4`, `W_FREQUENCY = 0.2`, and a `DECAY_RATE` of `0.05`, this formula produces a score between 0.0 and 1.0. Memories scoring below a configurable threshold (default: 0.3) become candidates for consolidation or pruning.
+```python
+import math
 
-The formula balances three intuitions: recent memories matter (recency), recently *used* memories matter even more (access recency), and frequently accessed memories have proven their value (frequency). The exponential decay means a memory's score drops sharply in the first few weeks, then levels off — mirroring how human memory works.
+def decay_rate_from_prune_days(prune_days: int, threshold: float = 0.3) -> float:
+    """Convert pruneDays to an exponential decay rate.
+
+    decay_rate = -ln(threshold) / prune_days
+    """
+    return -math.log(threshold) / prune_days
+```
+
+With the defaults (`pruneDays = 45`, `threshold = 0.3`), this gives `decay_rate ≈ 0.02676`. The formula produces a score between 0.0 and 1.0. Memories scoring below the threshold become candidates for consolidation or pruning.
+
+The formula balances two intuitions: recent memories matter (creation recency) and recently *used* memories matter even more (last-access recency). The exponential decay means a memory's score drops sharply in the first few weeks, then levels off — mirroring how human memory works. Because both terms carry equal weight (0.5), a memory that was created long ago but accessed recently can still score well, while a memory that is both old and untouched decays quickly.
+
+The right `pruneDays` value depends on your agent's use case. The following table provides recommended starting points for common agent archetypes:
+
+| Agent type | pruneDays | Rationale |
+|---|---|---|
+| Real-time support bot | 7 | Tickets resolve in hours/days |
+| Sales / onboarding agent | 21 | Deals close in weeks |
+| General assistant | 45 | Balanced retention |
+| IT helpdesk / ops agent | 90 | Incident patterns repeat seasonally |
+| Legal / compliance advisor | 180 | Precedents stay relevant for months |
 
 Here is the scoring function from our Memory Scorer Lambda (`code/lambdas/memory_scorer/handler.py`):
 
@@ -73,23 +93,20 @@ Here is the scoring function from our Memory Scorer Lambda (`code/lambdas/memory
 def compute_relevance_score(
     created_at: datetime,
     last_accessed_at: datetime,
-    access_count: int,
+    decay_rate: float,
     now: datetime,
 ) -> float:
-    """Compute relevance score using the weighted decay formula.
+    """Compute relevance score using the 2-term decay formula.
 
     Returns a float in [0.0, 1.0].
     """
     days_since_creation = max((now - created_at).total_seconds() / 86400, 0.0)
     days_since_last_access = max((now - last_accessed_at).total_seconds() / 86400, 0.0)
 
-    recency_factor = math.exp(-DECAY_RATE * days_since_creation)
-    access_factor = math.exp(-DECAY_RATE * days_since_last_access)
-    frequency_factor = min(access_count / MAX_ACCESS_BASELINE, 1.0)
+    recency_factor = math.exp(-decay_rate * days_since_creation)
+    access_factor = math.exp(-decay_rate * days_since_last_access)
 
-    score = (W_RECENCY * recency_factor
-           + W_ACCESS * access_factor
-           + W_FREQUENCY * frequency_factor)
+    score = 0.5 * recency_factor + 0.5 * access_factor
     return score
 ```
 
@@ -278,13 +295,14 @@ new events.Rule(this, 'NightlyMemoryLifecycleRule', {
 });
 ```
 
-All configurable parameters — `memoryTtlDays`, `relevanceThreshold`, `consolidationBatchSize`, and `bedrockModelId` — are read from CDK context, so you can tune them at deploy time without changing code:
+All configurable parameters — `memoryTtlDays`, `relevanceThreshold`, `consolidationBatchSize`, `pruneDays`, and `bedrockModelId` — are read from CDK context, so you can tune them at deploy time without changing code:
 
 ```bash
 npx cdk deploy \
   -c memoryTtlDays=60 \
   -c relevanceThreshold=0.25 \
-  -c consolidationBatchSize=15
+  -c consolidationBatchSize=15 \
+  -c pruneDays=45
 ```
 
 ### Cost Considerations
@@ -411,9 +429,9 @@ This tears down the Step Functions state machine, all Lambda functions, the Even
 
 ## Conclusion
 
-We showed how to build memory lifecycle policies for [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) agents using [AWS Step Functions](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html) and [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html). The solution applies three complementary policies — TTL expiration for hard time limits, relevance decay scoring for intelligent prioritization, and LLM-based consolidation for preserving knowledge in compact form. We also covered how to test that pruning does not degrade agent quality, and how to handle GDPR compliance at the memory layer.
+We showed how to build memory lifecycle policies for [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) agents using [AWS Step Functions](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html) and [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html). The solution applies three complementary policies — TTL expiration for hard time limits, relevance decay scoring for intelligent prioritization, and LLM-based consolidation for preserving knowledge in compact form. The `pruneDays` parameter lets you tune how aggressively memories decay — from 7 days for fast-moving support bots to 180 days for compliance-heavy agents. We also covered how to test that pruning does not degrade agent quality, and how to handle GDPR compliance at the memory layer.
 
-The full code is available in the `/code` directory of this repository. Deploy it with `npx cdk deploy` and start running nightly memory lifecycle management for your agents.
+The full code is available in the `/code` directory of this repository. Deploy it with `npx cdk deploy -c pruneDays=45` and start running nightly memory lifecycle management for your agents.
 
 To learn more, see the [Amazon Bedrock AgentCore documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html), the [AWS Step Functions developer guide](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html), and the [Amazon Bedrock user guide](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html).
 
