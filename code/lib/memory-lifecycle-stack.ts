@@ -91,20 +91,18 @@ export class MemoryLifecycleStack extends cdk.Stack {
     // IAM Policies — Least Privilege
     // ---------------------
 
-    // Memory Scorer: GetMemories, TagMemory on AgentCore Memory + PutLogEvents
+    // Memory Scorer: GetMemories, TagMemory on AgentCore Memory
+    // Note: PutLogEvents is already granted by the CDK-managed AWSLambdaBasicExecutionRole
     memoryScorerFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['agentcore-memory:GetMemories', 'agentcore-memory:TagMemory'],
-      resources: ['*'],
-    }));
-    memoryScorerFn.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['logs:PutLogEvents'],
-      resources: ['*'],
+      resources: [
+        `arn:aws:agentcore-memory:${this.region}:${this.account}:*`,
+      ],
     }));
 
     // Memory Consolidator: GetMemory, CreateMemory, DeleteMemory on AgentCore Memory
-    //                      + InvokeModel on Bedrock + PutLogEvents
+    //                      + InvokeModel on Bedrock
     memoryConsolidatorFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
@@ -112,41 +110,34 @@ export class MemoryLifecycleStack extends cdk.Stack {
         'agentcore-memory:CreateMemory',
         'agentcore-memory:DeleteMemory',
       ],
-      resources: ['*'],
+      resources: [
+        `arn:aws:agentcore-memory:${this.region}:${this.account}:*`,
+      ],
     }));
     memoryConsolidatorFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel'],
-      resources: ['*'],
-    }));
-    memoryConsolidatorFn.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['logs:PutLogEvents'],
-      resources: ['*'],
+      resources: [
+        `arn:aws:bedrock:${this.region}::foundation-model/${bedrockModelId}`,
+      ],
     }));
 
-    // Memory Pruner: DeleteMemory on AgentCore Memory + PutLogEvents
+    // Memory Pruner: DeleteMemory on AgentCore Memory
     memoryPrunerFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['agentcore-memory:DeleteMemory'],
-      resources: ['*'],
-    }));
-    memoryPrunerFn.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['logs:PutLogEvents'],
-      resources: ['*'],
+      resources: [
+        `arn:aws:agentcore-memory:${this.region}:${this.account}:*`,
+      ],
     }));
 
-    // GDPR Deletion Handler: ListMemories, DeleteMemory on AgentCore Memory + PutLogEvents
+    // GDPR Deletion Handler: ListMemories, DeleteMemory on AgentCore Memory
     gdprDeletionFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['agentcore-memory:ListMemories', 'agentcore-memory:DeleteMemory'],
-      resources: ['*'],
-    }));
-    gdprDeletionFn.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['logs:PutLogEvents'],
-      resources: ['*'],
+      resources: [
+        `arn:aws:agentcore-memory:${this.region}:${this.account}:*`,
+      ],
     }));
 
     // ---------------------
