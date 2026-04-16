@@ -16,7 +16,8 @@ from datetime import datetime, timezone
 import boto3
 from botocore.exceptions import ClientError, EndpointConnectionError
 
-# Add shared module to path
+# The shared module is deployed as a Lambda Layer at runtime.
+# The sys.path fallback enables local development and testing.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared.constants import (
     PRUNE_DAYS_DEFAULT,
@@ -57,6 +58,7 @@ def handler(event: dict, context) -> dict:
     Input event:
         {
             "agent_id": str,
+            "memory_id": str,
             "relevance_threshold": float
         }
 
@@ -71,6 +73,7 @@ def handler(event: dict, context) -> dict:
         }
     """
     agent_id = event["agent_id"]
+    memory_id = event["memory_id"]
     relevance_threshold = float(os.environ.get(
         "RELEVANCE_THRESHOLD", str(RELEVANCE_THRESHOLD_DEFAULT)
     ))
@@ -86,9 +89,12 @@ def handler(event: dict, context) -> dict:
     }))
 
     try:
-        client = boto3.client("agentcore-memory")
-        response = client.list_memories(agentId=agent_id)
-        memories = response.get("memories", [])
+        client = boto3.client("bedrock-agentcore")
+        response = client.list_memory_records(
+            memoryId=memory_id,
+            namespace=agent_id,
+        )
+        memories = response.get("memoryRecordSummaries", [])
     except (ClientError, EndpointConnectionError, Exception) as exc:
         error_msg = f"AgentCore Memory unreachable: {exc}"
         logger.error(json.dumps({
@@ -111,26 +117,34 @@ def handler(event: dict, context) -> dict:
     scored_count = 0
 
     for memory in memories:
-        memory_id = memory["memoryId"]
+        record_id = memory["memoryRecordId"]
         created_at = datetime.fromisoformat(memory["createdAt"])
-        last_accessed_at = datetime.fromisoformat(memory["lastAccessedAt"])
+        # MemoryRecordSummary does not include lastAccessedAt;
+        # fall back to createdAt when the field is absent.
+        last_accessed_at = datetime.fromisoformat(
+            memory.get("lastAccessedAt", memory["createdAt"])
+        )
 
         score = compute_relevance_score(created_at, last_accessed_at, decay_rate, now)
         scored_at = now.isoformat()
 
-        # Tag the memory with its relevance score and scoring timestamp
+        # Update the memory record with its relevance score and scoring timestamp
         try:
-            client.tag_memory(
+            client.batch_update_memory_records(
                 memoryId=memory_id,
-                tags={
-                    "relevance_score": str(score),
-                    "scored_at": scored_at,
-                },
+                records=[{
+                    "memoryRecordId": record_id,
+                    "content": {"text": json.dumps({
+                        "relevance_score": str(score),
+                        "scored_at": scored_at,
+                    })},
+                    "timestamp": now,
+                }],
             )
         except (ClientError, Exception) as exc:
             logger.warning(json.dumps({
                 "action": "tag_error",
-                "memory_id": memory_id,
+                "memory_id": record_id,
                 "agent_id": agent_id,
                 "error": str(exc),
                 "timestamp": now.isoformat(),
@@ -140,14 +154,14 @@ def handler(event: dict, context) -> dict:
 
         logger.info(json.dumps({
             "action": "score_memory",
-            "memory_id": memory_id,
+            "memory_id": record_id,
             "agent_id": agent_id,
             "score": score,
             "timestamp": scored_at,
         }))
 
         if score < relevance_threshold:
-            below_threshold.append({"memory_id": memory_id, "score": score})
+            below_threshold.append({"memory_id": record_id, "score": score})
 
     logger.info(json.dumps({
         "action": "score_complete",

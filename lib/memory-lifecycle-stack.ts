@@ -25,8 +25,27 @@ export class MemoryLifecycleStack extends cdk.Stack {
     const consolidationBatchSize = this.node.tryGetContext('consolidationBatchSize') ?? 10;
     const bedrockModelId =
       this.node.tryGetContext('bedrockModelId') ??
-      'anthropic.claude-3-sonnet-20240229-v1:0';
+      'anthropic.claude-sonnet-4-5-20250929-v1:0';
     const pruneDays = this.node.tryGetContext('pruneDays') ?? 45;
+
+    // ---------------------
+    // Lambda Layer — Shared Python module
+    // ---------------------
+    // The shared/ package (constants, models) is deployed as a Lambda Layer
+    // so that all handlers can `from shared.constants import ...` at runtime.
+    const sharedLayer = new lambda.LayerVersion(this, 'SharedLayer', {
+      code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambdas', 'shared'), {
+        bundling: {
+          image: lambda.Runtime.PYTHON_3_12.bundlingImage,
+          command: [
+            'bash', '-c',
+            'mkdir -p /asset-output/python/shared && cp -r . /asset-output/python/shared/',
+          ],
+        },
+      }),
+      compatibleRuntimes: [lambda.Runtime.PYTHON_3_12],
+      description: 'Shared constants and models for memory lifecycle Lambdas',
+    });
 
     // ---------------------
     // Lambda Functions
@@ -35,6 +54,7 @@ export class MemoryLifecycleStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'handler.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambdas', 'memory_scorer')),
+      layers: [sharedLayer],
       timeout: cdk.Duration.minutes(5),
       environment: {
         MEMORY_TTL_DAYS: String(memoryTtlDays),
@@ -49,6 +69,7 @@ export class MemoryLifecycleStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'handler.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambdas', 'memory_consolidator')),
+      layers: [sharedLayer],
       timeout: cdk.Duration.minutes(10),
       environment: {
         MEMORY_TTL_DAYS: String(memoryTtlDays),
@@ -63,6 +84,7 @@ export class MemoryLifecycleStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'handler.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambdas', 'memory_pruner')),
+      layers: [sharedLayer],
       timeout: cdk.Duration.minutes(5),
       environment: {
         MEMORY_TTL_DAYS: String(memoryTtlDays),
@@ -77,6 +99,7 @@ export class MemoryLifecycleStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'handler.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambdas', 'gdpr_deletion')),
+      layers: [sharedLayer],
       timeout: cdk.Duration.minutes(10),
       environment: {
         MEMORY_TTL_DAYS: String(memoryTtlDays),
@@ -91,27 +114,27 @@ export class MemoryLifecycleStack extends cdk.Stack {
     // IAM Policies — Least Privilege
     // ---------------------
 
-    // Memory Scorer: GetMemories, TagMemory on AgentCore Memory
+    // Memory Scorer: ListMemoryRecords, BatchUpdateMemoryRecords on AgentCore Memory
     // Note: PutLogEvents is already granted by the CDK-managed AWSLambdaBasicExecutionRole
     memoryScorerFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['agentcore-memory:GetMemories', 'agentcore-memory:TagMemory'],
+      actions: ['bedrock-agentcore:ListMemoryRecords', 'bedrock-agentcore:BatchUpdateMemoryRecords'],
       resources: [
-        `arn:aws:agentcore-memory:${this.region}:${this.account}:*`,
+        `arn:aws:bedrock-agentcore:${this.region}:${this.account}:memory/*`,
       ],
     }));
 
-    // Memory Consolidator: GetMemory, CreateMemory, DeleteMemory on AgentCore Memory
+    // Memory Consolidator: GetMemoryRecord, BatchCreateMemoryRecords, DeleteMemoryRecord on AgentCore Memory
     //                      + InvokeModel on Bedrock
     memoryConsolidatorFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
-        'agentcore-memory:GetMemory',
-        'agentcore-memory:CreateMemory',
-        'agentcore-memory:DeleteMemory',
+        'bedrock-agentcore:GetMemoryRecord',
+        'bedrock-agentcore:BatchCreateMemoryRecords',
+        'bedrock-agentcore:DeleteMemoryRecord',
       ],
       resources: [
-        `arn:aws:agentcore-memory:${this.region}:${this.account}:*`,
+        `arn:aws:bedrock-agentcore:${this.region}:${this.account}:memory/*`,
       ],
     }));
     memoryConsolidatorFn.addToRolePolicy(new iam.PolicyStatement({
@@ -122,21 +145,21 @@ export class MemoryLifecycleStack extends cdk.Stack {
       ],
     }));
 
-    // Memory Pruner: DeleteMemory on AgentCore Memory
+    // Memory Pruner: DeleteMemoryRecord on AgentCore Memory
     memoryPrunerFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['agentcore-memory:DeleteMemory'],
+      actions: ['bedrock-agentcore:DeleteMemoryRecord'],
       resources: [
-        `arn:aws:agentcore-memory:${this.region}:${this.account}:*`,
+        `arn:aws:bedrock-agentcore:${this.region}:${this.account}:memory/*`,
       ],
     }));
 
-    // GDPR Deletion Handler: ListMemories, DeleteMemory on AgentCore Memory
+    // GDPR Deletion Handler: RetrieveMemoryRecords, DeleteMemoryRecord on AgentCore Memory
     gdprDeletionFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['agentcore-memory:ListMemories', 'agentcore-memory:DeleteMemory'],
+      actions: ['bedrock-agentcore:RetrieveMemoryRecords', 'bedrock-agentcore:DeleteMemoryRecord'],
       resources: [
-        `arn:aws:agentcore-memory:${this.region}:${this.account}:*`,
+        `arn:aws:bedrock-agentcore:${this.region}:${this.account}:memory/*`,
       ],
     }));
 

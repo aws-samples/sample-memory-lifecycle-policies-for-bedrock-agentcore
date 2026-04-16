@@ -1,8 +1,8 @@
 """Memory Consolidator Lambda handler.
 
-Retrieves full content for a batch of memory IDs from AgentCore Memory,
+Retrieves full content for a batch of memory record IDs from AgentCore Memory,
 invokes Bedrock to produce a consolidated summary, stores the consolidated
-memory with provenance tags, and deletes the originals.
+memory record with provenance metadata, and deletes the originals.
 """
 
 import json
@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 import boto3
 from botocore.exceptions import ClientError, EndpointConnectionError
 
-# Add shared module to path
+# The shared module is deployed as a Lambda Layer at runtime.
+# The sys.path fallback enables local development and testing.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 logger = logging.getLogger()
@@ -37,7 +38,10 @@ def _build_prompt(memories: list[dict]) -> str:
     """Format memory contents into the consolidation prompt."""
     memory_texts = []
     for i, mem in enumerate(memories, 1):
-        memory_texts.append(f"[Memory {i} (ID: {mem['memoryId']})]:\n{mem['content']}")
+        # content is a tagged union: {"text": "..."} in the official API
+        content = mem.get("content", {})
+        text = content.get("text", "") if isinstance(content, dict) else str(content)
+        memory_texts.append(f"[Memory {i} (ID: {mem['memoryRecordId']})]:\n{text}")
     memory_contents = "\n\n".join(memory_texts)
     return CONSOLIDATION_PROMPT_TEMPLATE.format(memory_contents=memory_contents)
 
@@ -66,6 +70,7 @@ def handler(event: dict, context) -> dict:
     Input event:
         {
             "memory_ids": [str],
+            "memory_id": str,
             "agent_id": str,
             "bedrock_model_id": str
         }
@@ -81,6 +86,7 @@ def handler(event: dict, context) -> dict:
         }
     """
     memory_ids = event["memory_ids"]
+    memory_id = event["memory_id"]
     agent_id = event["agent_id"]
     bedrock_model_id = event["bedrock_model_id"]
     now = datetime.now(timezone.utc)
@@ -103,11 +109,12 @@ def handler(event: dict, context) -> dict:
     }
 
     # --- Step 1: Retrieve full content for each memory ID ---
-    memory_client = boto3.client("agentcore-memory")
+    memory_client = boto3.client("bedrock-agentcore")
     memories = []
     for mid in memory_ids:
         try:
-            mem = memory_client.get_memory(memoryId=mid)
+            response = memory_client.get_memory_record(memoryId=memory_id, memoryRecordId=mid)
+            mem = response["memoryRecord"]
             memories.append(mem)
         except (ClientError, EndpointConnectionError, Exception) as exc:
             error_msg = f"Failed to retrieve memory {mid}: {exc}"
@@ -152,16 +159,15 @@ def handler(event: dict, context) -> dict:
 
     # --- Step 3: Store consolidated memory with provenance tags ---
     try:
-        create_response = memory_client.create_memory(
-            agentId=agent_id,
-            content=summary,
-            tags={
-                "consolidated": "true",
-                "confidence_score": str(confidence),
-                "source_memories": json.dumps(memory_ids),
-            },
+        create_response = memory_client.batch_create_memory_records(
+            memoryId=memory_id,
+            records=[{
+                "content": {"text": summary},
+                "timestamp": now,
+                "namespaces": [agent_id],
+            }],
         )
-        consolidated_memory_id = create_response["memoryId"]
+        consolidated_memory_id = create_response["successfulRecords"][0]["memoryRecordId"]
     except (ClientError, EndpointConnectionError, Exception) as exc:
         error_msg = f"Failed to store consolidated memory: {exc}"
         logger.error(json.dumps({
@@ -188,7 +194,7 @@ def handler(event: dict, context) -> dict:
     orphaned_ids = []
     for mid in memory_ids:
         try:
-            memory_client.delete_memory(memoryId=mid)
+            memory_client.delete_memory_record(memoryId=memory_id, memoryRecordId=mid)
             deleted_count += 1
             logger.info(json.dumps({
                 "action": "consolidation_delete",

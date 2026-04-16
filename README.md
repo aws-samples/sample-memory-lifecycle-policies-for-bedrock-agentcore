@@ -35,7 +35,7 @@ The solution deploys the following AWS resources:
 - **1 Amazon CloudWatch dashboard** — visualizes Lambda invocations, errors, Step Functions executions, and custom memory lifecycle metrics
 - **1 AWS CloudTrail trail** with an S3 bucket — audit logging for AgentCore Memory API calls
 - **CloudWatch Log Groups** — structured JSON logging with 1-month retention for each Lambda function
-- **Amazon Bedrock** — used by the Memory Consolidator to summarize related memories via Claude 3 Sonnet
+- **Amazon Bedrock** — used by the Memory Consolidator to summarize related memories via Claude Sonnet 4.5
 
 ```
                           ┌──────────────────────────┐
@@ -101,7 +101,7 @@ The nightly Step Functions workflow executes the following steps in sequence:
 1. **TTL Expiration** — Invokes the Memory Pruner to delete memories that have exceeded their time-to-live (default: 90 days).
 2. **Score Memories** — Invokes the Memory Scorer to compute a relevance score for every memory belonging to an agent. Each memory is tagged with its score and scoring timestamp.
 3. **Check Low-Score Memories** — A Choice state that inspects the scoring results. If any memories scored below the relevance threshold, the workflow proceeds to consolidation. Otherwise, it skips directly to metrics emission.
-4. **Batch Consolidate** — A Map state that iterates over low-scoring memories and invokes the Memory Consolidator for each batch. The consolidator uses Amazon Bedrock (Claude 3 Sonnet) to produce a single summary from multiple related memories, stores the consolidated memory with provenance tags, and deletes the originals.
+4. **Batch Consolidate** — A Map state that iterates over low-scoring memories and invokes the Memory Consolidator for each batch. The consolidator uses Amazon Bedrock (Claude Sonnet 4.5) to produce a single summary from multiple related memories, stores the consolidated memory with provenance tags, and deletes the originals.
 5. **Prune Remaining** — Invokes the Memory Pruner to delete any remaining low-score memories that were not consolidated.
 6. **Emit Metrics** — A Pass state that structures the final workflow metrics (memories processed, TTL expired, workflow status).
 
@@ -170,6 +170,7 @@ code/
 │       ├── __init__.py
 │       ├── constants.py                # Decay rate calculation, default thresholds
 │       └── models.py                   # Dataclass models for all Lambda I/O
+│                                       # (deployed as a Lambda Layer)
 ├── test/
 │   ├── memory-lifecycle-stack.test.ts  # CDK infrastructure assertions
 │   └── test_regression_suite.py        # Agent quality regression tests
@@ -187,7 +188,7 @@ code/
 - [Node.js](https://nodejs.org/) >= 18.x
 - [AWS CDK CLI](https://docs.aws.amazon.com/cdk/v2/guide/getting-started.html) v2 (`npm install -g aws-cdk`)
 - [Python](https://www.python.org/downloads/) >= 3.12 (for Lambda runtime)
-- [Amazon Bedrock model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) enabled for `anthropic.claude-3-sonnet-20240229-v1:0` (or your chosen model) in your target region
+- [Amazon Bedrock model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) enabled for `anthropic.claude-sonnet-4-5-20250929-v1:0` (or your chosen model) in your target region
 - The target AWS account must be [bootstrapped for CDK](https://docs.aws.amazon.com/cdk/v2/guide/bootstrapping.html): `npx cdk bootstrap`
 
 ## Configuration
@@ -199,7 +200,7 @@ All tunable parameters are defined as CDK context values in `cdk.json` and can b
 | `memoryTtlDays` | `90` | Number of days after which a memory is considered expired and eligible for TTL deletion. |
 | `relevanceThreshold` | `0.3` | Minimum relevance score a memory must have to be retained. Memories scoring below this are candidates for consolidation or pruning. |
 | `consolidationBatchSize` | `10` | Maximum number of memories processed per consolidation batch. |
-| `bedrockModelId` | `anthropic.claude-3-sonnet-20240229-v1:0` | The Amazon Bedrock foundation model used for memory consolidation. |
+| `bedrockModelId` | `anthropic.claude-sonnet-4-5-20250929-v1:0` | The Amazon Bedrock foundation model used for memory consolidation. |
 | `pruneDays` | `45` | Approximate number of days of inactivity after which a memory's score drops below the relevance threshold. Used to compute the exponential decay rate. |
 
 To override parameters at deploy time:

@@ -15,7 +15,8 @@ from datetime import datetime, timezone
 import boto3
 from botocore.exceptions import ClientError, EndpointConnectionError
 
-# Add shared module to path
+# The shared module is deployed as a Lambda Layer at runtime.
+# The sys.path fallback enables local development and testing.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 logger = logging.getLogger()
@@ -27,7 +28,8 @@ def handler(event: dict, context) -> dict:
 
     Input event:
         {
-            "user_id": str
+            "user_id": str,
+            "memory_id": str
         }
 
     Returns:
@@ -39,6 +41,7 @@ def handler(event: dict, context) -> dict:
         }
     """
     user_id = event["user_id"]
+    memory_id = event["memory_id"]
     now = datetime.now(timezone.utc)
 
     logger.info(json.dumps({
@@ -47,12 +50,15 @@ def handler(event: dict, context) -> dict:
         "timestamp": now.isoformat(),
     }))
 
-    client = boto3.client("agentcore-memory")
+    client = boto3.client("bedrock-agentcore")
 
     # List all memories for this user across all agents
     try:
-        response = client.list_memories(userId=user_id)
-        memories = response.get("memories", [])
+        response = client.list_memory_records(
+            memoryId=memory_id,
+            namespace=user_id,
+        )
+        memories = response.get("memoryRecordSummaries", [])
     except (ClientError, EndpointConnectionError, Exception) as exc:
         logger.error(json.dumps({
             "action": "gdpr_delete_error",
@@ -71,22 +77,22 @@ def handler(event: dict, context) -> dict:
     failed_memory_ids = []
 
     for memory in memories:
-        memory_id = memory["memoryId"]
+        record_id = memory["memoryRecordId"]
         try:
-            client.delete_memory(memoryId=memory_id)
+            client.delete_memory_record(memoryId=memory_id, memoryRecordId=record_id)
             deleted_count += 1
             logger.info(json.dumps({
                 "action": "gdpr_delete",
                 "user_id": user_id,
-                "memory_id": memory_id,
+                "memory_id": record_id,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }))
         except (ClientError, EndpointConnectionError, Exception) as exc:
-            failed_memory_ids.append(memory_id)
+            failed_memory_ids.append(record_id)
             logger.error(json.dumps({
                 "action": "gdpr_delete_error",
                 "user_id": user_id,
-                "memory_id": memory_id,
+                "memory_id": record_id,
                 "error": str(exc),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }))

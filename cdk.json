@@ -18,6 +18,6 @@
     "memoryTtlDays": 90,
     "relevanceThreshold": 0.3,
     "consolidationBatchSize": 10,
-    "bedrockModelId": "anthropic.claude-3-sonnet-20240229-v1:0"
+    "bedrockModelId": "anthropic.claude-sonnet-4-5-20250929-v1:0"
   }
 }
