@@ -154,7 +154,7 @@ def handler(event: dict, context) -> dict:
     cutoff = now - timedelta(days=ttl_days)
     expired_ids = []
     for memory in memories:
-        created_at = datetime.fromisoformat(memory["createdAt"])
+        created_at = datetime.fromtimestamp(memory["createdAt"])
         if created_at < cutoff:
             expired_ids.append(memory["memoryRecordId"])
 

@@ -120,10 +120,10 @@ def handler(event: dict, context) -> dict:
 
     for memory in memories:
         record_id = memory["memoryRecordId"]
-        created_at = datetime.fromisoformat(memory["createdAt"])
+        created_at = datetime.fromtimestamp(memory["createdAt"])
         # MemoryRecordSummary does not include lastAccessedAt;
         # fall back to createdAt when the field is absent.
-        last_accessed_at = datetime.fromisoformat(
+        last_accessed_at = datetime.fromtimestamp(
             memory.get("lastAccessedAt", memory["createdAt"])
         )
 
