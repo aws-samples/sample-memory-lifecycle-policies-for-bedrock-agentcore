@@ -96,7 +96,7 @@ class AgentCoreEvaluationsClient:
 
     def __init__(self, region_name: str = "us-east-1"):
         self._client = boto3.client(
-            "agentcore-evaluations",
+            "bedrock-agentcore",
             region_name=region_name,
         )
 
@@ -114,7 +114,7 @@ class AgentCoreEvaluationsClient:
         Returns:
             A quality score in [0.0, 1.0].
         """
-        result = self._client.evaluate_response(
+        result = self._client.evaluate(
             agentResponse=agent_response,
             expectedCriteria=expected_criteria,
         )
@@ -131,13 +131,13 @@ class AgentCoreRuntimeClient:
     def __init__(self, agent_id: str, region_name: str = "us-east-1"):
         self.agent_id = agent_id
         self._client = boto3.client(
-            "agentcore-runtime",
+            "bedrock-agentcore",
             region_name=region_name,
         )
 
     def query(self, question: str) -> str:
         """Send a question to the agent and return the text response."""
-        result = self._client.invoke_agent(
+        result = self._client.invoke_agent_runtime(
             agentId=self.agent_id,
             inputText=question,
         )

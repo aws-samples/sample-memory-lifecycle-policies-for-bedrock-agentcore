@@ -145,19 +145,19 @@ export class MemoryLifecycleStack extends cdk.Stack {
       ],
     }));
 
-    // Memory Pruner: DeleteMemoryRecord on AgentCore Memory
+    // Memory Pruner: ListMemoryRecords (TTL mode), DeleteMemoryRecord on AgentCore Memory
     memoryPrunerFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['bedrock-agentcore:DeleteMemoryRecord'],
+      actions: ['bedrock-agentcore:ListMemoryRecords', 'bedrock-agentcore:DeleteMemoryRecord'],
       resources: [
         `arn:aws:bedrock-agentcore:${this.region}:${this.account}:memory/*`,
       ],
     }));
 
-    // GDPR Deletion Handler: RetrieveMemoryRecords, DeleteMemoryRecord on AgentCore Memory
+    // GDPR Deletion Handler: ListMemoryRecords, DeleteMemoryRecord on AgentCore Memory
     gdprDeletionFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['bedrock-agentcore:RetrieveMemoryRecords', 'bedrock-agentcore:DeleteMemoryRecord'],
+      actions: ['bedrock-agentcore:ListMemoryRecords', 'bedrock-agentcore:DeleteMemoryRecord'],
       resources: [
         `arn:aws:bedrock-agentcore:${this.region}:${this.account}:memory/*`,
       ],

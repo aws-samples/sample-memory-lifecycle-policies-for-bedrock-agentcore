@@ -68,12 +68,14 @@ def handler(event: dict, context) -> dict:
             "agent_id": str,
             "total_memories": int,
             "scored_memories": int,
-            "below_threshold": [{"memory_id": str, "score": float}],
+            "below_threshold": [{"memory_ids": [str], "memory_id": str, "agent_id": str, "bedrock_model_id": str}],
             "error": str | None
         }
     """
     agent_id = event["agent_id"]
     memory_id = event["memory_id"]
+    consolidation_batch_size = int(os.environ.get("CONSOLIDATION_BATCH_SIZE", "10"))
+    bedrock_model_id = os.environ.get("BEDROCK_MODEL_ID", "")
     relevance_threshold = float(os.environ.get(
         "RELEVANCE_THRESHOLD", str(RELEVANCE_THRESHOLD_DEFAULT)
     ))
@@ -113,7 +115,7 @@ def handler(event: dict, context) -> dict:
         }
 
     total_memories = len(memories)
-    below_threshold = []
+    below_threshold_ids = []
     scored_count = 0
 
     for memory in memories:
@@ -161,14 +163,26 @@ def handler(event: dict, context) -> dict:
         }))
 
         if score < relevance_threshold:
-            below_threshold.append({"memory_id": record_id, "score": score})
+            below_threshold_ids.append(record_id)
+
+    # Batch below-threshold IDs into groups of CONSOLIDATION_BATCH_SIZE
+    # Each batch matches the consolidator's expected input schema
+    below_threshold = [
+        {
+            "memory_ids": below_threshold_ids[i:i + consolidation_batch_size],
+            "memory_id": memory_id,
+            "agent_id": agent_id,
+            "bedrock_model_id": bedrock_model_id,
+        }
+        for i in range(0, len(below_threshold_ids), consolidation_batch_size)
+    ]
 
     logger.info(json.dumps({
         "action": "score_complete",
         "agent_id": agent_id,
         "total_memories": total_memories,
         "scored_memories": scored_count,
-        "below_threshold_count": len(below_threshold),
+        "below_threshold_count": len(below_threshold_ids),
         "timestamp": now.isoformat(),
     }))
 
