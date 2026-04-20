@@ -52,13 +52,22 @@ def handler(event: dict, context) -> dict:
 
     client = boto3.client("bedrock-agentcore")
 
-    # List all memories for this user across all agents
+    # List all memories for this user across all agents (paginated)
     try:
-        response = client.list_memory_records(
-            memoryId=memory_id,
-            namespace=user_id,
-        )
-        memories = response.get("memoryRecordSummaries", [])
+        memories = []
+        next_token = None
+        while True:
+            kwargs = {
+                "memoryId": memory_id,
+                "namespace": user_id,
+            }
+            if next_token is not None:
+                kwargs["nextToken"] = next_token
+            response = client.list_memory_records(**kwargs)
+            memories.extend(response.get("memoryRecordSummaries", []))
+            next_token = response.get("nextToken")
+            if not next_token:
+                break
     except (ClientError, EndpointConnectionError, Exception) as exc:
         logger.error(json.dumps({
             "action": "gdpr_delete_error",

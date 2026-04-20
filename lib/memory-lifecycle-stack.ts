@@ -27,6 +27,32 @@ export class MemoryLifecycleStack extends cdk.Stack {
       this.node.tryGetContext('bedrockModelId') ??
       'anthropic.claude-sonnet-4-5-20250929-v1:0';
     const pruneDays = this.node.tryGetContext('pruneDays') ?? 45;
+    const wRecency = this.node.tryGetContext('wRecency') ?? 0.4;
+    const wAccess = this.node.tryGetContext('wAccess') ?? 0.35;
+    const wFrequency = this.node.tryGetContext('wFrequency') ?? 0.25;
+    const maxAccessBaseline = this.node.tryGetContext('maxAccessBaseline') ?? 50;
+
+    // ---------------------
+    // CloudTrail Trail Bucket (created early so Lambda env vars can reference it)
+    // ---------------------
+    const trailBucket = new s3.Bucket(this, 'MemoryLifecycleTrailBucket', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      enforceSSL: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+    });
+
+    // ---------------------
+    // Run Output Bucket — stores workflow run output and access ledger
+    // ---------------------
+    const runOutputBucket = new s3.Bucket(this, 'RunOutputBucket', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      enforceSSL: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+    });
 
     // ---------------------
     // Lambda Layer — Shared Python module
@@ -41,6 +67,21 @@ export class MemoryLifecycleStack extends cdk.Stack {
             'bash', '-c',
             'mkdir -p /asset-output/python/shared && cp -r . /asset-output/python/shared/',
           ],
+          local: {
+            tryBundle(outputDir: string) {
+              const fs = require('fs');
+              const targetDir = path.join(outputDir, 'python', 'shared');
+              fs.mkdirSync(targetDir, { recursive: true });
+              const sourceDir = path.join(__dirname, '..', 'lambdas', 'shared');
+              for (const file of fs.readdirSync(sourceDir)) {
+                const srcPath = path.join(sourceDir, file);
+                if (fs.statSync(srcPath).isFile()) {
+                  fs.copyFileSync(srcPath, path.join(targetDir, file));
+                }
+              }
+              return true;
+            },
+          },
         },
       }),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_12],
@@ -62,6 +103,14 @@ export class MemoryLifecycleStack extends cdk.Stack {
         CONSOLIDATION_BATCH_SIZE: String(consolidationBatchSize),
         BEDROCK_MODEL_ID: bedrockModelId,
         PRUNE_DAYS: String(pruneDays),
+        TRAIL_BUCKET_NAME: trailBucket.bucketName,
+        TRAIL_LOOKBACK_HOURS: '25',
+        W_RECENCY: String(wRecency),
+        W_ACCESS: String(wAccess),
+        W_FREQUENCY: String(wFrequency),
+        MAX_ACCESS_BASELINE: String(maxAccessBaseline),
+        AWS_ACCOUNT_ID: this.account,
+        RUN_OUTPUT_BUCKET_NAME: runOutputBucket.bucketName,
       },
     });
 
@@ -110,6 +159,25 @@ export class MemoryLifecycleStack extends cdk.Stack {
       },
     });
 
+    const metricsEmitterFn = new lambda.Function(this, 'MetricsEmitterFunction', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'handler.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambdas', 'metrics_emitter')),
+      layers: [sharedLayer],
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const runOutputWriterFn = new lambda.Function(this, 'RunOutputWriterFunction', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'handler.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambdas', 'run_output_writer')),
+      layers: [sharedLayer],
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        RUN_OUTPUT_BUCKET_NAME: runOutputBucket.bucketName,
+      },
+    });
+
     // ---------------------
     // IAM Policies — Least Privilege
     // ---------------------
@@ -118,9 +186,19 @@ export class MemoryLifecycleStack extends cdk.Stack {
     // Note: PutLogEvents is already granted by the CDK-managed AWSLambdaBasicExecutionRole
     memoryScorerFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['bedrock-agentcore:ListMemoryRecords', 'bedrock-agentcore:BatchUpdateMemoryRecords'],
+      actions: ['bedrock-agentcore:ListMemoryRecords'],
       resources: [
         `arn:aws:bedrock-agentcore:${this.region}:${this.account}:memory/*`,
+      ],
+    }));
+
+    // Memory Scorer: S3 read access to CloudTrail trail bucket
+    memoryScorerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:GetObject', 's3:ListBucket'],
+      resources: [
+        trailBucket.bucketArn,
+        `${trailBucket.bucketArn}/*`,
       ],
     }));
 
@@ -151,6 +229,31 @@ export class MemoryLifecycleStack extends cdk.Stack {
       actions: ['bedrock-agentcore:ListMemoryRecords', 'bedrock-agentcore:DeleteMemoryRecord'],
       resources: [
         `arn:aws:bedrock-agentcore:${this.region}:${this.account}:memory/*`,
+      ],
+    }));
+
+    // Memory Scorer: S3 read/write access to access ledger in run output bucket
+    memoryScorerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:GetObject', 's3:PutObject'],
+      resources: [
+        `${runOutputBucket.bucketArn}/ledger/*`,
+      ],
+    }));
+
+    // Metrics Emitter: PutMetricData on CloudWatch (does not support resource-level restrictions)
+    metricsEmitterFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+    }));
+
+    // Run Output Writer: S3 PutObject on run output bucket
+    runOutputWriterFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:PutObject'],
+      resources: [
+        `${runOutputBucket.bucketArn}/*`,
       ],
     }));
 
@@ -246,34 +349,37 @@ export class MemoryLifecycleStack extends cdk.Stack {
     batchConsolidate.itemProcessor(consolidateTask);
     batchConsolidate.addCatch(formatFailure('BatchConsolidate'), buildCatch('BatchConsolidate'));
 
-    // 5. PruneRemaining — invokes Memory Pruner on remaining low-score memories
-    const pruneRemaining = new tasks.LambdaInvoke(this, 'PruneRemaining', {
-      lambdaFunction: memoryPrunerFn,
+    // 5. EmitMetrics — invokes Metrics Emitter to publish CloudWatch metrics
+    const emitMetrics = new tasks.LambdaInvoke(this, 'EmitMetrics', {
+      lambdaFunction: metricsEmitterFn,
       payloadResponseOnly: true,
-      resultPath: '$.pruneResult',
+      resultPath: '$.metricsResult',
     });
-    pruneRemaining.addRetry(retryConfig);
-    pruneRemaining.addCatch(formatFailure('PruneRemaining'), buildCatch('PruneRemaining'));
+    emitMetrics.addRetry(retryConfig);
+    emitMetrics.addCatch(formatFailure('EmitMetrics'), buildCatch('EmitMetrics'));
 
-    // 6. EmitMetrics — Pass state to structure final metrics
-    const emitMetrics = new sfn.Pass(this, 'EmitMetrics', {
-      parameters: {
-        'memories_processed.$': '$.scoringResult.total_memories',
-        'ttl_expired.$': '$.ttlResult.deleted_count',
-        'workflow_status': 'success',
-      },
+    // 6. WriteRunOutput — invokes Run Output Writer to persist run results to S3
+    const writeRunOutput = new tasks.LambdaInvoke(this, 'WriteRunOutput', {
+      lambdaFunction: runOutputWriterFn,
+      payloadResponseOnly: true,
+      resultPath: '$.runOutputResult',
     });
+    writeRunOutput.addRetry(retryConfig);
+    writeRunOutput.addCatch(formatFailure('WriteRunOutput'), buildCatch('WriteRunOutput'));
 
     // --- Wire the workflow ---
+    // Chain EmitMetrics → WriteRunOutput once (both branches converge here)
+    const emitAndWrite = emitMetrics.next(writeRunOutput);
+
     const definition = ttlExpiration
       .next(scoreMemories)
       .next(
         checkLowScoreMemories
           .when(
             sfn.Condition.isPresent('$.scoringResult.below_threshold[0]'),
-            batchConsolidate.next(pruneRemaining).next(emitMetrics),
+            batchConsolidate.next(emitAndWrite),
           )
-          .otherwise(emitMetrics),
+          .otherwise(emitAndWrite),
       );
 
     const stateMachine = new sfn.StateMachine(this, 'MemoryLifecycleStateMachine', {
@@ -319,6 +425,8 @@ export class MemoryLifecycleStack extends cdk.Stack {
       { fn: memoryConsolidatorFn, name: 'MemoryConsolidator' },
       { fn: memoryPrunerFn, name: 'MemoryPruner' },
       { fn: gdprDeletionFn, name: 'GDPRDeletion' },
+      { fn: metricsEmitterFn, name: 'MetricsEmitter' },
+      { fn: runOutputWriterFn, name: 'RunOutputWriter' },
     ];
 
     dashboard.addWidgets(
@@ -385,21 +493,31 @@ export class MemoryLifecycleStack extends cdk.Stack {
     // ---------------------
     // CloudTrail — Audit Logging for AgentCore Memory API calls
     // ---------------------
-    const trailBucket = new s3.Bucket(this, 'MemoryLifecycleTrailBucket', {
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      enforceSSL: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-    });
-
-    new cloudtrail.Trail(this, 'MemoryLifecycleTrail', {
+    const trail = new cloudtrail.Trail(this, 'MemoryLifecycleTrail', {
       bucket: trailBucket,
       trailName: 'MemoryLifecycleAuditTrail',
       isMultiRegionTrail: false,
       includeGlobalServiceEvents: false,
       enableFileValidation: true,
     });
+
+    // Add advanced event selectors for BedrockAgentCore Memory data events
+    const cfnTrail = trail.node.defaultChild as cloudtrail.CfnTrail;
+    cfnTrail.addPropertyOverride('AdvancedEventSelectors', [
+      {
+        Name: 'MemoryDataEvents',
+        FieldSelectors: [
+          {
+            Field: 'eventCategory',
+            EqualTo: ['Data'],
+          },
+          {
+            Field: 'resources.type',
+            EqualTo: ['AWS::BedrockAgentCore::Memory'],
+          },
+        ],
+      },
+    ]);
 
     // ---------------------
     // Structured JSON Logging — CloudWatch Logs
@@ -413,6 +531,8 @@ export class MemoryLifecycleStack extends cdk.Stack {
       { fn: memoryConsolidatorFn, id: 'MemoryConsolidatorLogGroup' },
       { fn: memoryPrunerFn, id: 'MemoryPrunerLogGroup' },
       { fn: gdprDeletionFn, id: 'GDPRDeletionLogGroup' },
+      { fn: metricsEmitterFn, id: 'MetricsEmitterLogGroup' },
+      { fn: runOutputWriterFn, id: 'RunOutputWriterLogGroup' },
     ];
 
     for (const { fn, id } of lambdaLogConfigs) {

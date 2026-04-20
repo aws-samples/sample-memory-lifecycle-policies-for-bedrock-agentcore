@@ -1,472 +1,494 @@
 """
-Bug Condition Exploration Test — Property 1: Blog Code Hallucinations and Misconfigurations
+Bug Condition Exploration Tests — Property 1: Memory Lifecycle Runtime Failures
 
-**Validates: Requirements 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8**
+**Validates: Requirements 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.11**
 
 This test encodes the EXPECTED CORRECT behavior for all 8 bug conditions
-identified in the validation report. Each assertion checks what the code
-SHOULD look like after the fix.
+identified in the memory lifecycle validation report. Each assertion checks
+what the code SHOULD do after the fix.
 
-- On UNFIXED code this test MUST FAIL — failure confirms the bugs exist.
-- On FIXED code this test MUST PASS — passing confirms the bugs are resolved.
+- On UNFIXED code these tests MUST FAIL — failure confirms the bugs exist.
+- On FIXED code these tests MUST PASS — passing confirms the bugs are resolved.
 
 Bug conditions tested:
-  1.1 IAM mismatch: GDPR handler should have ListMemoryRecords (not RetrieveMemoryRecords)
-  1.2 Hallucinated client agentcore-evaluations → should be bedrock-agentcore
-  1.3 Hallucinated client agentcore-runtime → should be bedrock-agentcore
-  1.4 Hallucinated method evaluate_response() → should be evaluate()
-  1.5 Hallucinated method invoke_agent() → should be invoke_agent_runtime()
-  1.6 TTL data flow gap: pruner should handle TTL mode when memory_ids absent
-  1.7 Batching mismatch: scorer should return batched below_threshold with memory_ids key
-  1.8 Bad package version: aws-cdk should be ^2.249.0 (not ^2.1118.0)
+  Bug 1 — Datetime TypeError (Scorer): datetime.fromtimestamp(datetime(...)) raises TypeError
+  Bug 2 — Datetime TypeError (Pruner): same TypeError in TTL mode
+  Bug 3 — Missing requestIdentifier (Consolidator): batch_create_memory_records missing required field
+  Bug 4 — Content Overwrite (Scorer): batch_update_memory_records overwrites original memory text
+  Bug 5 — Missing Pagination (Scorer): only first page of list_memory_records processed
+  Bug 6 — Missing Pagination (Pruner TTL): only first page processed in TTL mode
+  Bug 7 — Missing Pagination (GDPR): only first page processed in GDPR deletion
+  Bug 8 — STS Implicit Dependency (Scorer): sts.get_caller_identity() called instead of env var
 """
 
 import json
 import os
-import re
+import sys
+import uuid
+import importlib
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch, call
 
-from hypothesis import given, settings, HealthCheck
-import hypothesis.strategies as st
+import pytest
 
 # ---------------------------------------------------------------------------
-# Path resolution
+# Path setup — ensure Lambda handler modules are importable
 # ---------------------------------------------------------------------------
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-CODE_ROOT = os.path.join(REPO_ROOT, "code")
+CODE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+LAMBDAS_ROOT = os.path.join(CODE_ROOT, "lambdas")
 
-CDK_STACK_PATH = os.path.join(CODE_ROOT, "lib", "memory-lifecycle-stack.ts")
-REGRESSION_SUITE_PATH = os.path.join(CODE_ROOT, "test", "test_regression_suite.py")
-PRUNER_PATH = os.path.join(CODE_ROOT, "lambdas", "memory_pruner", "handler.py")
-SCORER_PATH = os.path.join(CODE_ROOT, "lambdas", "memory_scorer", "handler.py")
-PACKAGE_JSON_PATH = os.path.join(CODE_ROOT, "package.json")
-
-
-def _read(path: str) -> str:
-    """Read a file and return its content as a string."""
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
+# Add paths so we can import the handlers
+sys.path.insert(0, LAMBDAS_ROOT)
+sys.path.insert(0, os.path.join(LAMBDAS_ROOT, "memory_scorer"))
+sys.path.insert(0, os.path.join(LAMBDAS_ROOT, "memory_pruner"))
+sys.path.insert(0, os.path.join(LAMBDAS_ROOT, "memory_consolidator"))
+sys.path.insert(0, os.path.join(LAMBDAS_ROOT, "gdpr_deletion"))
 
 
 # ---------------------------------------------------------------------------
-# File-based bug conditions: (file_path, expected_correct_value) pairs
-# These are checked via sampled_from PBT strategy.
+# Helpers
 # ---------------------------------------------------------------------------
 
-FILE_BASED_BUG_CONDITIONS = [
-    # 1.1 IAM mismatch — GDPR handler should grant ListMemoryRecords
-    (
-        CDK_STACK_PATH,
-        "ListMemoryRecords",
-        "GDPR handler IAM policy must contain ListMemoryRecords",
-    ),
-    # 1.2 Hallucinated client agentcore-evaluations → bedrock-agentcore
-    (
-        REGRESSION_SUITE_PATH,
-        'boto3.client(\n            "bedrock-agentcore"',
-        "AgentCoreEvaluationsClient must use bedrock-agentcore client",
-    ),
-    # 1.8 Bad package version — aws-cdk should be ^2.249.0
-    (
-        PACKAGE_JSON_PATH,
-        '"aws-cdk": "^2.249.0"',
-        "aws-cdk version must be ^2.249.0",
-    ),
-]
+def make_memory_record(record_id: str, created_at: datetime) -> dict:
+    """Build a mock memory record summary as returned by list_memory_records."""
+    return {
+        "memoryRecordId": record_id,
+        "createdAt": created_at,
+        "content": {"text": f"Original content for {record_id}"},
+    }
+
+
+SCORER_ENV_VARS = {
+    "TRAIL_BUCKET_NAME": "my-trail-bucket",
+    "AWS_REGION": "us-east-1",
+    "CONSOLIDATION_BATCH_SIZE": "10",
+    "BEDROCK_MODEL_ID": "anthropic.claude-v2",
+    "RELEVANCE_THRESHOLD": "0.3",
+    "PRUNE_DAYS": "45",
+    "AWS_ACCOUNT_ID": "123456789012",
+}
+
+
+def make_scorer_mocks(memory_records, paginated=False, page1_records=None, page2_records=None):
+    """Create mock boto3 clients for scorer tests."""
+    mock_client = MagicMock()
+
+    if paginated:
+        call_count = {"n": 0}
+
+        def mock_list(**kwargs):
+            call_count["n"] += 1
+            if "nextToken" not in kwargs:
+                return {
+                    "memoryRecordSummaries": page1_records,
+                    "nextToken": "page2-token",
+                }
+            else:
+                return {
+                    "memoryRecordSummaries": page2_records,
+                }
+
+        mock_client.list_memory_records.side_effect = mock_list
+    else:
+        mock_client.list_memory_records.return_value = {
+            "memoryRecordSummaries": memory_records,
+        }
+
+    mock_client.batch_update_memory_records.return_value = {}
+
+    mock_s3 = MagicMock()
+    mock_s3.get_paginator.return_value.paginate.return_value = [{"Contents": []}]
+
+    mock_sts = MagicMock()
+    mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
+
+    clients_created = []
+
+    def mock_boto3_client(service_name, **kwargs):
+        clients_created.append(service_name)
+        if service_name == "bedrock-agentcore":
+            return mock_client
+        elif service_name == "s3":
+            return mock_s3
+        elif service_name == "sts":
+            return mock_sts
+        return MagicMock()
+
+    return mock_client, mock_sts, mock_boto3_client, clients_created
 
 
 # ---------------------------------------------------------------------------
-# 1.1 IAM mismatch
+# Bug 1 — Datetime TypeError (Scorer)
 # ---------------------------------------------------------------------------
 
-def test_gdpr_handler_iam_has_list_memory_records():
+@pytest.mark.parametrize("created_at", [
+    datetime(2020, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+    datetime(2023, 6, 15, 12, 30, 0, tzinfo=timezone.utc),
+    datetime(2025, 12, 31, 23, 59, 59, tzinfo=timezone.utc),
+])
+def test_bug1_scorer_datetime_no_typeerror(created_at):
     """
-    **Validates: Requirements 1.1**
+    **Validates: Requirements 1.1, 1.3**
 
-    The GDPR deletion handler's IAM policy in the CDK stack must grant
-    'bedrock-agentcore:ListMemoryRecords' (not 'RetrieveMemoryRecords').
+    Mock list_memory_records to return records where createdAt is a datetime
+    object (as boto3 does). Call scorer handler(). Assert it does NOT raise
+    TypeError.
 
-    FAILS on unfixed code because the CDK stack has RetrieveMemoryRecords.
+    On unfixed code, datetime.fromtimestamp(datetime(...)) raises
+    TypeError: an integer is required (got type datetime.datetime).
     """
-    content = _read(CDK_STACK_PATH)
+    record_id = "rec-" + uuid.uuid4().hex[:8]
+    mock_memory_record = make_memory_record(record_id, created_at)
 
-    # Find the GDPR section's IAM policy
-    # The GDPR handler IAM block should contain ListMemoryRecords
-    gdpr_section_match = re.search(
-        r"// GDPR.*?addToRolePolicy.*?actions:\s*\[(.*?)\]",
-        content,
-        re.DOTALL,
-    )
-    assert gdpr_section_match is not None, "Could not find GDPR handler IAM policy section"
+    mock_client, mock_sts, mock_boto3_client, _ = make_scorer_mocks([mock_memory_record])
 
-    actions_block = gdpr_section_match.group(1)
-    assert "ListMemoryRecords" in actions_block, (
-        f"GDPR handler IAM policy does not contain 'ListMemoryRecords'. "
-        f"Found actions: {actions_block.strip()}"
-    )
-    assert "RetrieveMemoryRecords" not in actions_block, (
-        f"GDPR handler IAM policy still contains 'RetrieveMemoryRecords'. "
-        f"Found actions: {actions_block.strip()}"
-    )
+    with patch("boto3.client", side_effect=mock_boto3_client), \
+         patch.dict(os.environ, SCORER_ENV_VARS, clear=False):
+        import memory_scorer.handler as scorer_mod
+        importlib.reload(scorer_mod)
+
+        event = {"agent_id": "agent-001", "memory_id": "mem-001"}
+
+        # This should NOT raise TypeError
+        result = scorer_mod.handler(event, None)
+        assert result["status"] == "success", f"Scorer failed: {result.get('error')}"
+        assert result["scored_memories"] == 1
 
 
 # ---------------------------------------------------------------------------
-# 1.2 Hallucinated client agentcore-evaluations
+# Bug 2 — Datetime TypeError (Pruner)
 # ---------------------------------------------------------------------------
 
-def test_evaluations_client_uses_bedrock_agentcore():
+@pytest.mark.parametrize("created_at", [
+    datetime(2020, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+    datetime(2023, 6, 15, 12, 30, 0, tzinfo=timezone.utc),
+    datetime(2025, 12, 31, 23, 59, 59, tzinfo=timezone.utc),
+])
+def test_bug2_pruner_datetime_no_typeerror(created_at):
     """
-    **Validates: Requirements 1.2**
+    **Validates: Requirements 1.2, 1.4**
 
-    AgentCoreEvaluationsClient must use boto3.client("bedrock-agentcore"),
-    not the hallucinated "agentcore-evaluations".
+    Mock list_memory_records to return records where createdAt is a datetime
+    object. Call pruner handler() in TTL mode. Assert it does NOT raise
+    TypeError.
 
-    FAILS on unfixed code because it uses agentcore-evaluations.
+    On unfixed code, datetime.fromtimestamp(datetime(...)) raises TypeError.
     """
-    content = _read(REGRESSION_SUITE_PATH)
+    record_id = "rec-" + uuid.uuid4().hex[:8]
+    mock_memory_record = make_memory_record(record_id, created_at)
 
-    # Find the AgentCoreEvaluationsClient class __init__
-    eval_class_match = re.search(
-        r"class AgentCoreEvaluationsClient.*?def __init__.*?boto3\.client\(\s*\"([^\"]+)\"",
-        content,
-        re.DOTALL,
-    )
-    assert eval_class_match is not None, "Could not find AgentCoreEvaluationsClient.__init__"
+    mock_client = MagicMock()
+    mock_client.list_memory_records.return_value = {
+        "memoryRecordSummaries": [mock_memory_record],
+    }
+    mock_client.delete_memory_record.return_value = {}
 
-    client_name = eval_class_match.group(1)
-    assert client_name == "bedrock-agentcore", (
-        f"AgentCoreEvaluationsClient uses boto3.client(\"{client_name}\") "
-        f"but should use boto3.client(\"bedrock-agentcore\")"
-    )
+    with patch("boto3.client", return_value=mock_client), \
+         patch.dict(os.environ, {"MEMORY_TTL_DAYS": "90"}, clear=False):
+        import memory_pruner.handler as pruner_mod
+        importlib.reload(pruner_mod)
 
+        # TTL mode: no memory_ids in event
+        event = {"memory_id": "mem-001", "agent_id": "agent-001"}
 
-# ---------------------------------------------------------------------------
-# 1.3 Hallucinated client agentcore-runtime
-# ---------------------------------------------------------------------------
-
-def test_runtime_client_uses_bedrock_agentcore():
-    """
-    **Validates: Requirements 1.3**
-
-    AgentCoreRuntimeClient must use boto3.client("bedrock-agentcore"),
-    not the hallucinated "agentcore-runtime".
-
-    FAILS on unfixed code because it uses agentcore-runtime.
-    """
-    content = _read(REGRESSION_SUITE_PATH)
-
-    # Find the AgentCoreRuntimeClient class __init__
-    runtime_class_match = re.search(
-        r"class AgentCoreRuntimeClient.*?def __init__.*?boto3\.client\(\s*\"([^\"]+)\"",
-        content,
-        re.DOTALL,
-    )
-    assert runtime_class_match is not None, "Could not find AgentCoreRuntimeClient.__init__"
-
-    client_name = runtime_class_match.group(1)
-    assert client_name == "bedrock-agentcore", (
-        f"AgentCoreRuntimeClient uses boto3.client(\"{client_name}\") "
-        f"but should use boto3.client(\"bedrock-agentcore\")"
-    )
+        # This should NOT raise TypeError
+        result = pruner_mod.handler(event, None)
+        assert result["status"] in ("success", "partial_failure", "failure")
 
 
 # ---------------------------------------------------------------------------
-# 1.4 Hallucinated method evaluate_response()
+# Bug 3 — Missing requestIdentifier (Consolidator)
 # ---------------------------------------------------------------------------
 
-def test_evaluations_client_calls_evaluate():
-    """
-    **Validates: Requirements 1.4**
-
-    The evaluations client's scoring method must call self._client.evaluate(
-    not the hallucinated self._client.evaluate_response(.
-
-    FAILS on unfixed code because it calls evaluate_response(.
-    """
-    content = _read(REGRESSION_SUITE_PATH)
-
-    # Find the evaluate_response method body in AgentCoreEvaluationsClient
-    eval_method_match = re.search(
-        r"class AgentCoreEvaluationsClient.*?def evaluate_response\(.*?\).*?:"
-        r"(.*?)(?=\nclass |\Z)",
-        content,
-        re.DOTALL,
-    )
-    assert eval_method_match is not None, (
-        "Could not find evaluate_response method in AgentCoreEvaluationsClient"
-    )
-
-    method_body = eval_method_match.group(1)
-
-    assert "self._client.evaluate(" in method_body, (
-        "AgentCoreEvaluationsClient should call self._client.evaluate() "
-        "but does not contain 'self._client.evaluate('"
-    )
-    assert "self._client.evaluate_response(" not in method_body, (
-        "AgentCoreEvaluationsClient still calls self._client.evaluate_response() "
-        "which is a hallucinated method"
-    )
-
-
-# ---------------------------------------------------------------------------
-# 1.5 Hallucinated method invoke_agent()
-# ---------------------------------------------------------------------------
-
-def test_runtime_client_calls_invoke_agent_runtime():
+def test_bug3_consolidator_request_identifier_present():
     """
     **Validates: Requirements 1.5**
 
-    The runtime client's query method must call self._client.invoke_agent_runtime(
-    not the hallucinated self._client.invoke_agent(.
+    Mock all boto3 calls. Call consolidator handler(). Capture the
+    batch_create_memory_records call args. Assert requestIdentifier is
+    present in each record.
 
-    FAILS on unfixed code because it calls invoke_agent(.
+    On unfixed code, requestIdentifier is missing from the record dict.
     """
-    content = _read(REGRESSION_SUITE_PATH)
+    mock_client = MagicMock()
 
-    # Find the query method body in AgentCoreRuntimeClient
-    query_method_match = re.search(
-        r"class AgentCoreRuntimeClient.*?def query\(.*?\).*?:"
-        r"(.*?)(?=\nclass |\ndef |\Z)",
-        content,
-        re.DOTALL,
-    )
-    assert query_method_match is not None, (
-        "Could not find query method in AgentCoreRuntimeClient"
-    )
+    mock_client.get_memory_record.return_value = {
+        "memoryRecord": {
+            "memoryRecordId": "rec-001",
+            "content": {"text": "User prefers dark mode"},
+            "createdAt": datetime(2025, 1, 15, tzinfo=timezone.utc),
+        }
+    }
 
-    method_body = query_method_match.group(1)
+    mock_client.batch_create_memory_records.return_value = {
+        "successfulRecords": [{"memoryRecordId": "consolidated-001"}],
+        "failedRecords": [],
+    }
+    mock_client.delete_memory_record.return_value = {}
 
-    assert "self._client.invoke_agent_runtime(" in method_body, (
-        "AgentCoreRuntimeClient.query() should call self._client.invoke_agent_runtime() "
-        "but does not contain 'self._client.invoke_agent_runtime('"
-    )
-    assert "self._client.invoke_agent(" not in method_body or \
-           "self._client.invoke_agent_runtime(" in method_body, (
-        "AgentCoreRuntimeClient.query() still calls self._client.invoke_agent() "
-        "which is a hallucinated method"
-    )
+    # Mock Bedrock
+    mock_bedrock = MagicMock()
+    mock_bedrock_response = {"body": MagicMock()}
+    mock_bedrock_response["body"].read.return_value = json.dumps({
+        "content": [{"text": json.dumps({
+            "summary": "User prefers dark mode",
+            "confidence": 0.95,
+            "key_facts": ["dark mode preference"],
+        })}]
+    }).encode()
+    mock_bedrock.invoke_model.return_value = mock_bedrock_response
+
+    def mock_boto3_client(service_name, **kwargs):
+        if service_name == "bedrock-agentcore":
+            return mock_client
+        elif service_name == "bedrock-runtime":
+            return mock_bedrock
+        return MagicMock()
+
+    with patch("boto3.client", side_effect=mock_boto3_client):
+        import memory_consolidator.handler as consolidator_mod
+        importlib.reload(consolidator_mod)
+
+        event = {
+            "memory_ids": ["rec-001"],
+            "memory_id": "mem-001",
+            "agent_id": "agent-001",
+            "bedrock_model_id": "anthropic.claude-v2",
+        }
+
+        result = consolidator_mod.handler(event, None)
+
+        # Verify batch_create_memory_records was called
+        assert mock_client.batch_create_memory_records.called, (
+            "batch_create_memory_records was not called"
+        )
+
+        # Get the call args
+        call_kwargs = mock_client.batch_create_memory_records.call_args
+        records = call_kwargs.kwargs.get("records", [])
+
+        assert len(records) > 0, "No records passed to batch_create_memory_records"
+
+        for record in records:
+            assert "requestIdentifier" in record, (
+                f"requestIdentifier missing from batch_create_memory_records record. "
+                f"Record keys: {list(record.keys())}"
+            )
 
 
 # ---------------------------------------------------------------------------
-# 1.6 TTL data flow gap
+# Bug 4 — Content Overwrite (Scorer)
 # ---------------------------------------------------------------------------
 
-def test_pruner_handles_ttl_mode():
+def test_bug4_scorer_does_not_call_batch_update():
     """
     **Validates: Requirements 1.6**
 
-    The memory pruner must handle TTL mode when memory_ids is absent.
-    It should have logic to query memories (list_memory_records) or handle
-    ttl_mode when memory_ids is not provided in the event.
+    Mock all boto3 calls. Call scorer handler(). Assert
+    batch_update_memory_records is NOT called at all.
 
-    FAILS on unfixed code because the pruner unconditionally requires memory_ids.
+    On unfixed code, it IS called with score metadata in the content field,
+    destroying original memory text.
     """
-    content = _read(PRUNER_PATH)
+    created_at = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    mock_memory_record = make_memory_record("rec-content-001", created_at)
 
-    # The pruner should have some form of TTL handling or list_memory_records call
-    has_ttl_handling = (
-        "list_memory_records" in content
-        or "ttl_mode" in content
-        or "MEMORY_TTL_DAYS" in content
-        or "memory_ids" in content and "event.get(" in content
-    )
+    mock_client, mock_sts, mock_boto3_client, _ = make_scorer_mocks([mock_memory_record])
 
-    # Check that memory_ids is accessed safely (not unconditionally via event["memory_ids"])
-    # The fixed code should use event.get("memory_ids") or check for its presence
-    has_safe_memory_ids_access = (
-        'event.get("memory_ids"' in content
-        or "event.get('memory_ids'" in content
-        or '"memory_ids" in event' in content
-        or "'memory_ids' in event" in content
-    )
+    with patch("boto3.client", side_effect=mock_boto3_client), \
+         patch.dict(os.environ, SCORER_ENV_VARS, clear=False):
+        import memory_scorer.handler as scorer_mod
+        importlib.reload(scorer_mod)
 
-    assert has_ttl_handling and has_safe_memory_ids_access, (
-        "Memory pruner does not handle TTL mode when memory_ids is absent. "
-        "The pruner unconditionally accesses event['memory_ids'] without "
-        "fallback logic for TTL-based deletion."
-    )
+        event = {"agent_id": "agent-001", "memory_id": "mem-001"}
+        result = scorer_mod.handler(event, None)
+
+        # The scorer should NOT call batch_update_memory_records
+        assert not mock_client.batch_update_memory_records.called, (
+            "Scorer called batch_update_memory_records, which overwrites "
+            "original memory content with score metadata. "
+            f"Call args: {mock_client.batch_update_memory_records.call_args}"
+        )
 
 
 # ---------------------------------------------------------------------------
-# 1.7 Batching mismatch
+# Bug 5 — Missing Pagination (Scorer)
 # ---------------------------------------------------------------------------
 
-def test_scorer_returns_batched_below_threshold():
+def test_bug5_scorer_paginates_all_records():
     """
     **Validates: Requirements 1.7**
 
-    The memory scorer must return batched below_threshold payloads where each
-    item contains a 'memory_ids' key (list of IDs), not individual
-    {"memory_id": str, "score": float} items.
+    Mock list_memory_records to return a nextToken on the first page and
+    more records on the second page. Call scorer handler(). Assert all
+    records from both pages are scored.
 
-    FAILS on unfixed code because the scorer returns individual items.
+    On unfixed code, only the first page is processed.
     """
-    content = _read(SCORER_PATH)
+    page1_records = [
+        make_memory_record(f"rec-p1-{i}", datetime(2025, 7, 1, tzinfo=timezone.utc))
+        for i in range(3)
+    ]
+    page2_records = [
+        make_memory_record(f"rec-p2-{i}", datetime(2025, 7, 1, tzinfo=timezone.utc))
+        for i in range(2)
+    ]
 
-    # The scorer should batch below_threshold results with memory_ids key
-    has_batching = (
-        "memory_ids" in content
-        and "CONSOLIDATION_BATCH_SIZE" in content
+    mock_client, mock_sts, mock_boto3_client, _ = make_scorer_mocks(
+        [], paginated=True, page1_records=page1_records, page2_records=page2_records
     )
 
-    # Check that below_threshold items use memory_ids (plural) key
-    # The fixed code should build batch objects with memory_ids lists
-    has_memory_ids_key = re.search(
-        r"""["']memory_ids["']\s*:""",
-        content,
-    )
+    with patch("boto3.client", side_effect=mock_boto3_client), \
+         patch.dict(os.environ, SCORER_ENV_VARS, clear=False):
+        import memory_scorer.handler as scorer_mod
+        importlib.reload(scorer_mod)
 
-    assert has_batching and has_memory_ids_key, (
-        "Memory scorer does not return batched below_threshold payloads. "
-        "The scorer returns individual {'memory_id': str, 'score': float} items "
-        "but should return batched payloads with 'memory_ids' key."
-    )
+        event = {"agent_id": "agent-001", "memory_id": "mem-001"}
+        result = scorer_mod.handler(event, None)
+
+        total_expected = len(page1_records) + len(page2_records)
+        assert result["scored_memories"] == total_expected, (
+            f"Scorer only scored {result['scored_memories']} records but expected "
+            f"{total_expected}. Only the first page was processed (missing pagination)."
+        )
+        assert result["total_memories"] == total_expected
 
 
 # ---------------------------------------------------------------------------
-# 1.8 Bad package version
+# Bug 6 — Missing Pagination (Pruner TTL)
 # ---------------------------------------------------------------------------
 
-def test_package_json_has_correct_cdk_version():
+def test_bug6_pruner_ttl_paginates_all_records():
     """
     **Validates: Requirements 1.8**
 
-    package.json must specify aws-cdk version ^2.249.0, not ^2.1118.0.
+    Mock list_memory_records to return a nextToken on the first page.
+    Call pruner handler() in TTL mode. Assert all records from both pages
+    are checked for TTL expiration.
 
-    FAILS on unfixed code because it has ^2.1118.0.
+    On unfixed code, only the first page is processed.
     """
-    content = _read(PACKAGE_JSON_PATH)
-    pkg = json.loads(content)
+    old_date = datetime(2020, 1, 1, tzinfo=timezone.utc)
 
-    dev_deps = pkg.get("devDependencies", {})
-    cdk_version = dev_deps.get("aws-cdk", "")
+    page1_records = [
+        make_memory_record(f"rec-p1-{i}", old_date) for i in range(3)
+    ]
+    page2_records = [
+        make_memory_record(f"rec-p2-{i}", old_date) for i in range(2)
+    ]
 
-    assert cdk_version == "^2.249.0", (
-        f"aws-cdk version is '{cdk_version}' but should be '^2.249.0'"
+    def mock_list_memory_records(**kwargs):
+        if "nextToken" not in kwargs:
+            return {
+                "memoryRecordSummaries": page1_records,
+                "nextToken": "page2-token",
+            }
+        else:
+            return {
+                "memoryRecordSummaries": page2_records,
+            }
+
+    mock_client = MagicMock()
+    mock_client.list_memory_records.side_effect = mock_list_memory_records
+    mock_client.delete_memory_record.return_value = {}
+
+    with patch("boto3.client", return_value=mock_client), \
+         patch.dict(os.environ, {"MEMORY_TTL_DAYS": "90"}, clear=False):
+        import memory_pruner.handler as pruner_mod
+        importlib.reload(pruner_mod)
+
+        event = {"memory_id": "mem-001", "agent_id": "agent-001"}
+        result = pruner_mod.handler(event, None)
+
+        total_expected = len(page1_records) + len(page2_records)
+        assert result.get("expired_count", 0) == total_expected, (
+            f"Pruner only found {result.get('expired_count', 0)} expired records "
+            f"but expected {total_expected}. Only the first page was processed "
+            f"(missing pagination)."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bug 7 — Missing Pagination (GDPR)
+# ---------------------------------------------------------------------------
+
+def test_bug7_gdpr_paginates_all_records():
+    """
+    **Validates: Requirements 1.9**
+
+    Mock list_memory_records to return a nextToken on the first page.
+    Call GDPR handler(). Assert all records from both pages are deleted.
+
+    On unfixed code, only the first page is processed.
+    """
+    page1_records = [{"memoryRecordId": f"rec-p1-{i}"} for i in range(3)]
+    page2_records = [{"memoryRecordId": f"rec-p2-{i}"} for i in range(2)]
+
+    def mock_list_memory_records(**kwargs):
+        if "nextToken" not in kwargs:
+            return {
+                "memoryRecordSummaries": page1_records,
+                "nextToken": "page2-token",
+            }
+        else:
+            return {
+                "memoryRecordSummaries": page2_records,
+            }
+
+    mock_client = MagicMock()
+    mock_client.list_memory_records.side_effect = mock_list_memory_records
+    mock_client.delete_memory_record.return_value = {}
+
+    with patch("boto3.client", return_value=mock_client):
+        import gdpr_deletion.handler as gdpr_mod
+        importlib.reload(gdpr_mod)
+
+        event = {"user_id": "user-001", "memory_id": "mem-001"}
+        result = gdpr_mod.handler(event, None)
+
+        total_expected = len(page1_records) + len(page2_records)
+        assert result["deleted_count"] == total_expected, (
+            f"GDPR handler only deleted {result['deleted_count']} records but "
+            f"expected {total_expected}. Only the first page was processed "
+            f"(missing pagination)."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bug 8 — STS Implicit Dependency (Scorer)
+# ---------------------------------------------------------------------------
+
+def test_bug8_scorer_uses_env_var_not_sts():
+    """
+    **Validates: Requirements 1.10**
+
+    Mock boto3 clients. Call scorer handler() with AWS_ACCOUNT_ID env var
+    set. Assert sts.get_caller_identity() is NOT called and
+    os.environ["AWS_ACCOUNT_ID"] is used instead.
+
+    On unfixed code, STS is called regardless of the env var.
+    """
+    created_at = datetime(2025, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+    mock_memory_record = make_memory_record("rec-sts-001", created_at)
+
+    mock_client, mock_sts, mock_boto3_client, clients_created = make_scorer_mocks(
+        [mock_memory_record]
     )
 
+    with patch("boto3.client", side_effect=mock_boto3_client), \
+         patch.dict(os.environ, SCORER_ENV_VARS, clear=False):
+        import memory_scorer.handler as scorer_mod
+        importlib.reload(scorer_mod)
 
-# ---------------------------------------------------------------------------
-# PBT: sampled_from over file-based checks
-# ---------------------------------------------------------------------------
+        event = {"agent_id": "agent-001", "memory_id": "mem-001"}
+        result = scorer_mod.handler(event, None)
 
-# Strategy pairs: (file_path, check_fn_name, description)
-# Each check function verifies one expected correct value in a file.
-
-_FILE_CHECKS = [
-    ("iam_mismatch", CDK_STACK_PATH, "ListMemoryRecords in GDPR IAM policy"),
-    ("eval_client", REGRESSION_SUITE_PATH, "bedrock-agentcore in AgentCoreEvaluationsClient"),
-    ("runtime_client", REGRESSION_SUITE_PATH, "bedrock-agentcore in AgentCoreRuntimeClient"),
-    ("eval_method", REGRESSION_SUITE_PATH, "self._client.evaluate( in evaluations client"),
-    ("runtime_method", REGRESSION_SUITE_PATH, "self._client.invoke_agent_runtime( in runtime client"),
-    ("ttl_mode", PRUNER_PATH, "TTL mode handling in pruner"),
-    ("batching", SCORER_PATH, "batched memory_ids in scorer output"),
-    ("pkg_version", PACKAGE_JSON_PATH, "aws-cdk ^2.249.0 in package.json"),
-]
-
-
-def _check_bug_condition(check_id: str, file_path: str) -> None:
-    """Dispatch to the appropriate check for a given bug condition."""
-    content = _read(file_path)
-
-    if check_id == "iam_mismatch":
-        gdpr_match = re.search(
-            r"// GDPR.*?addToRolePolicy.*?actions:\s*\[(.*?)\]",
-            content, re.DOTALL,
+        # STS should NOT be called when AWS_ACCOUNT_ID env var is set
+        assert not mock_sts.get_caller_identity.called, (
+            "Scorer called sts.get_caller_identity() even though AWS_ACCOUNT_ID "
+            "env var is set. The scorer should read the account ID from the "
+            "environment variable instead of making an STS API call."
         )
-        assert gdpr_match is not None, "GDPR IAM policy section not found"
-        assert "ListMemoryRecords" in gdpr_match.group(1), (
-            "GDPR IAM policy missing ListMemoryRecords"
+        assert "sts" not in clients_created, (
+            "Scorer created an STS client even though AWS_ACCOUNT_ID env var is set."
         )
-
-    elif check_id == "eval_client":
-        m = re.search(
-            r"class AgentCoreEvaluationsClient.*?boto3\.client\(\s*\"([^\"]+)\"",
-            content, re.DOTALL,
-        )
-        assert m and m.group(1) == "bedrock-agentcore", (
-            f"AgentCoreEvaluationsClient uses wrong client: {m.group(1) if m else 'not found'}"
-        )
-
-    elif check_id == "runtime_client":
-        m = re.search(
-            r"class AgentCoreRuntimeClient.*?boto3\.client\(\s*\"([^\"]+)\"",
-            content, re.DOTALL,
-        )
-        assert m and m.group(1) == "bedrock-agentcore", (
-            f"AgentCoreRuntimeClient uses wrong client: {m.group(1) if m else 'not found'}"
-        )
-
-    elif check_id == "eval_method":
-        m = re.search(
-            r"class AgentCoreEvaluationsClient.*?def evaluate_response\(.*?\).*?:(.*?)(?=\nclass |\Z)",
-            content, re.DOTALL,
-        )
-        assert m is not None, "evaluate_response method not found"
-        body = m.group(1)
-        assert "self._client.evaluate(" in body and "self._client.evaluate_response(" not in body, (
-            "Evaluations client should call self._client.evaluate(), not evaluate_response()"
-        )
-
-    elif check_id == "runtime_method":
-        m = re.search(
-            r"class AgentCoreRuntimeClient.*?def query\(.*?\).*?:(.*?)(?=\nclass |\ndef |\Z)",
-            content, re.DOTALL,
-        )
-        assert m is not None, "query method not found"
-        body = m.group(1)
-        assert "self._client.invoke_agent_runtime(" in body, (
-            "Runtime client should call self._client.invoke_agent_runtime(), not invoke_agent()"
-        )
-
-    elif check_id == "ttl_mode":
-        has_safe_access = (
-            'event.get("memory_ids"' in content
-            or "event.get('memory_ids'" in content
-            or '"memory_ids" in event' in content
-            or "'memory_ids' in event" in content
-        )
-        has_ttl_logic = (
-            "list_memory_records" in content
-            or "ttl_mode" in content
-            or "MEMORY_TTL_DAYS" in content
-        )
-        assert has_safe_access and has_ttl_logic, (
-            "Pruner does not handle TTL mode when memory_ids is absent"
-        )
-
-    elif check_id == "batching":
-        has_memory_ids_key = re.search(r"""["']memory_ids["']\s*:""", content)
-        has_batch_size = "CONSOLIDATION_BATCH_SIZE" in content
-        assert has_memory_ids_key and has_batch_size, (
-            "Scorer does not return batched below_threshold with memory_ids key"
-        )
-
-    elif check_id == "pkg_version":
-        pkg = json.loads(content)
-        version = pkg.get("devDependencies", {}).get("aws-cdk", "")
-        assert version == "^2.249.0", (
-            f"aws-cdk version is '{version}', expected '^2.249.0'"
-        )
-
-
-@given(check=st.sampled_from(_FILE_CHECKS))
-@settings(
-    max_examples=len(_FILE_CHECKS),
-    suppress_health_check=[HealthCheck.too_slow],
-)
-def test_all_bug_conditions_fixed(check):
-    """
-    **Validates: Requirements 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8**
-
-    Property: For every bug condition identified in the validation report,
-    the expected correct value should be present in the corresponding file.
-
-    Uses hypothesis.strategies.sampled_from over the concrete set of
-    (check_id, file_path, description) tuples.
-
-    On UNFIXED code this test FAILS — confirming the bugs exist.
-    On FIXED code this test PASSES — confirming the bugs are resolved.
-    """
-    check_id, file_path, description = check
-    assert os.path.exists(file_path), f"File not found: {file_path}"
-    _check_bug_condition(check_id, file_path)

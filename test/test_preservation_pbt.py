@@ -1,16 +1,19 @@
 """
 Preservation Property-Based Tests — Extended Coverage
 
-**Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.10**
+**Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8**
 
 These property-based tests capture the baseline behavior of non-buggy code paths
 BEFORE the fix is applied. They MUST PASS on unfixed code (confirming the baseline)
 and MUST STILL PASS after the fix (confirming no regressions).
 
-This file extends coverage beyond code/test/test_preservation.py with additional
-PBT tests for scoring formula, decay rate, determine_pass_fail, compute_quality_delta,
-and static file assertions for IAM permissions, CDK infrastructure, package.json,
-blog narrative, and handler behavior patterns.
+This file covers:
+- Preservation 1: Scoring Formula (compute_relevance_score with full 3-term formula)
+- Preservation 2: Batch Grouping (below-threshold ID batching)
+- Preservation 3: Pruner Mode 1 (explicit ID deletion, no-short-circuit)
+- Preservation 4: GDPR No-Short-Circuit Deletion
+- Preservation 5: decay_rate_from_prune_days formula and error handling
+Plus static file assertions for CDK, infrastructure, blog, handler patterns.
 """
 
 import json
@@ -19,6 +22,7 @@ import os
 import re
 import sys
 from datetime import datetime, timezone, timedelta
+from unittest.mock import patch, MagicMock
 
 import pytest
 from hypothesis import given, settings, assume, HealthCheck
@@ -62,12 +66,474 @@ def _read(path: str) -> str:
 
 
 # ===================================================================
+# Hypothesis strategies
+# ===================================================================
+
+# Timezone-aware datetimes within a reasonable range
+tz_aware_datetimes = st.datetimes(
+    min_value=datetime(2020, 1, 1),
+    max_value=datetime(2025, 12, 31),
+    timezones=st.just(timezone.utc),
+)
+
+
+# ===================================================================
+# Preservation 1 — Scoring Formula
+# ===================================================================
+
+class TestPreservation1ScoringFormula:
+    """
+    **Validates: Requirements 3.1**
+
+    Property-based test: for all valid inputs, compute_relevance_score()
+    returns a float >= 0.0 that matches the 3-term weighted decay formula:
+    w_recency * exp(-decay_rate * days_since_creation)
+    + w_access * exp(-decay_rate * days_since_last_access)
+    + w_frequency * min(access_count / max_access_baseline, 1.0)
+
+    When weights sum to 1.0, the result is in [0, 1].
+    """
+
+    @given(
+        created_at=tz_aware_datetimes,
+        last_accessed_at=tz_aware_datetimes,
+        access_count=st.integers(min_value=0, max_value=200),
+        decay_rate=st.floats(min_value=0.001, max_value=1.0),
+        w_recency=st.floats(min_value=0.0, max_value=1.0),
+        w_access=st.floats(min_value=0.0, max_value=1.0),
+        w_frequency=st.floats(min_value=0.0, max_value=1.0),
+        max_access_baseline=st.integers(min_value=1, max_value=200),
+    )
+    @settings(max_examples=300, suppress_health_check=[HealthCheck.too_slow])
+    def test_scoring_formula_matches_reference(
+        self,
+        created_at,
+        last_accessed_at,
+        access_count,
+        decay_rate,
+        w_recency,
+        w_access,
+        w_frequency,
+        max_access_baseline,
+    ):
+        """
+        **Validates: Requirements 3.1**
+
+        Property: For all valid inputs, compute_relevance_score returns a float
+        >= 0.0 that matches the reference formula exactly.
+        """
+        # Filter NaN values
+        assume(not math.isnan(w_recency))
+        assume(not math.isnan(w_access))
+        assume(not math.isnan(w_frequency))
+        assume(not math.isnan(decay_rate))
+
+        # Use a fixed 'now' that is always >= both datetimes
+        now = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+        score = compute_relevance_score(
+            created_at=created_at,
+            last_accessed_at=last_accessed_at,
+            access_count=access_count,
+            decay_rate=decay_rate,
+            now=now,
+            w_recency=w_recency,
+            w_access=w_access,
+            w_frequency=w_frequency,
+            max_access_baseline=max_access_baseline,
+        )
+
+        # Must be a float
+        assert isinstance(score, float)
+        # Must be non-negative
+        assert score >= 0.0, f"Score {score} is negative"
+
+        # Compute reference value
+        days_since_creation = max((now - created_at).total_seconds() / 86400, 0.0)
+        days_since_last_access = max((now - last_accessed_at).total_seconds() / 86400, 0.0)
+
+        expected = (
+            w_recency * math.exp(-decay_rate * days_since_creation)
+            + w_access * math.exp(-decay_rate * days_since_last_access)
+            + w_frequency * min(access_count / max_access_baseline, 1.0)
+        )
+
+        assert abs(score - expected) < 1e-9, (
+            f"Score {score} != expected {expected}"
+        )
+
+    @given(
+        created_at=tz_aware_datetimes,
+        last_accessed_at=tz_aware_datetimes,
+        access_count=st.integers(min_value=0, max_value=200),
+        decay_rate=st.floats(min_value=0.001, max_value=1.0),
+        max_access_baseline=st.integers(min_value=1, max_value=200),
+    )
+    @settings(max_examples=200, suppress_health_check=[HealthCheck.too_slow])
+    def test_scoring_formula_in_unit_range_when_weights_sum_to_one(
+        self,
+        created_at,
+        last_accessed_at,
+        access_count,
+        decay_rate,
+        max_access_baseline,
+    ):
+        """
+        **Validates: Requirements 3.1**
+
+        Property: When weights sum to 1.0 (the default), score is in [0, 1].
+        """
+        assume(not math.isnan(decay_rate))
+
+        now = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+        score = compute_relevance_score(
+            created_at=created_at,
+            last_accessed_at=last_accessed_at,
+            access_count=access_count,
+            decay_rate=decay_rate,
+            now=now,
+            w_recency=0.4,
+            w_access=0.35,
+            w_frequency=0.25,
+            max_access_baseline=max_access_baseline,
+        )
+
+        assert 0.0 <= score <= 1.0, f"Score {score} out of [0.0, 1.0] with default weights"
+
+
+# ===================================================================
+# Preservation 2 — Batch Grouping
+# ===================================================================
+
+class TestPreservation2BatchGrouping:
+    """
+    **Validates: Requirements 3.2**
+
+    Property-based test: the batching logic
+    [ids[i:i+batch_size] for i in range(0, len(ids), batch_size)]
+    preserves all IDs exactly once, each batch has at most batch_size
+    elements, and the total count equals the input count.
+    """
+
+    @given(
+        num_ids=st.integers(min_value=1, max_value=200),
+        batch_size=st.integers(min_value=1, max_value=50),
+    )
+    @settings(max_examples=300, suppress_health_check=[HealthCheck.too_slow])
+    def test_batch_grouping_preserves_all_ids(self, num_ids, batch_size):
+        """
+        **Validates: Requirements 3.2**
+
+        Property: For any list of IDs and batch size, batching produces
+        groups where all IDs appear exactly once, each batch has at most
+        batch_size elements, and total count equals input count.
+        """
+        ids = [f"mem-{i}" for i in range(num_ids)]
+
+        # This is the exact batching logic from the scorer handler
+        batches = [ids[i:i + batch_size] for i in range(0, len(ids), batch_size)]
+
+        # All IDs appear exactly once across batches
+        all_ids_in_batches = []
+        for batch in batches:
+            all_ids_in_batches.extend(batch)
+        assert sorted(all_ids_in_batches) == sorted(ids), (
+            "Not all IDs appear exactly once across batches"
+        )
+
+        # Each batch has at most batch_size elements
+        for batch in batches:
+            assert len(batch) <= batch_size, (
+                f"Batch has {len(batch)} elements, exceeds batch_size={batch_size}"
+            )
+
+        # Total count equals input count
+        total = sum(len(b) for b in batches)
+        assert total == num_ids, (
+            f"Total batched count {total} != input count {num_ids}"
+        )
+
+
+# ===================================================================
+# Preservation 3 — Pruner Mode 1 (Explicit ID Deletion)
+# ===================================================================
+
+class TestPreservation3PrunerMode1:
+    """
+    **Validates: Requirements 3.3**
+
+    Property-based test: Pruner Mode 1 (explicit memory_ids) uses the
+    no-short-circuit pattern. deleted_count + failed_count == len(memory_ids),
+    and the return structure has status, deleted_count, failed_count,
+    failed_memory_ids.
+    """
+
+    @given(
+        num_ids=st.integers(min_value=1, max_value=50),
+    )
+    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    def test_pruner_mode1_no_short_circuit(self, num_ids):
+        """
+        **Validates: Requirements 3.3**
+
+        Property: For any list of memory IDs, pruner Mode 1 processes all
+        IDs (no short-circuit), and deleted_count + failed_count == len(memory_ids).
+        """
+        memory_ids = [f"rec-{i}" for i in range(num_ids)]
+
+        mock_client = MagicMock()
+        # delete_memory_record succeeds for all
+        mock_client.delete_memory_record.return_value = {}
+
+        event = {
+            "memory_id": "mem-container-1",
+            "memory_ids": memory_ids,
+            "agent_id": "agent-test",
+        }
+
+        with patch("boto3.client", return_value=mock_client):
+            from memory_pruner.handler import handler as pruner_handler
+            result = pruner_handler(event, None)
+
+        # Return structure must have these keys
+        assert "status" in result
+        assert "deleted_count" in result
+        assert "failed_count" in result
+        assert "failed_memory_ids" in result
+
+        # No-short-circuit: all IDs processed
+        assert result["deleted_count"] + result["failed_count"] == len(memory_ids), (
+            f"deleted_count({result['deleted_count']}) + failed_count({result['failed_count']}) "
+            f"!= len(memory_ids)({len(memory_ids)})"
+        )
+
+    @given(
+        num_ids=st.integers(min_value=2, max_value=30),
+        fail_indices=st.lists(st.integers(min_value=0, max_value=29), min_size=1, max_size=10),
+    )
+    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    def test_pruner_mode1_partial_failure(self, num_ids, fail_indices):
+        """
+        **Validates: Requirements 3.3**
+
+        Property: When some deletions fail, pruner still processes all IDs
+        and correctly reports partial_failure.
+        """
+        memory_ids = [f"rec-{i}" for i in range(num_ids)]
+        # Normalize fail_indices to be within range
+        valid_fail_indices = set(i % num_ids for i in fail_indices)
+
+        mock_client = MagicMock()
+        call_count = [0]
+
+        def side_effect(**kwargs):
+            idx = call_count[0]
+            call_count[0] += 1
+            if idx in valid_fail_indices:
+                raise Exception(f"Simulated failure for index {idx}")
+            return {}
+
+        mock_client.delete_memory_record.side_effect = side_effect
+
+        event = {
+            "memory_id": "mem-container-1",
+            "memory_ids": memory_ids,
+            "agent_id": "agent-test",
+        }
+
+        with patch("boto3.client", return_value=mock_client):
+            from memory_pruner.handler import handler as pruner_handler
+            result = pruner_handler(event, None)
+
+        # No-short-circuit invariant
+        assert result["deleted_count"] + result["failed_count"] == len(memory_ids)
+        assert result["failed_count"] == len(valid_fail_indices)
+        assert len(result["failed_memory_ids"]) == len(valid_fail_indices)
+
+
+
+# ===================================================================
+# Preservation 4 — GDPR No-Short-Circuit Deletion
+# ===================================================================
+
+class TestPreservation4GDPRNoShortCircuit:
+    """
+    **Validates: Requirements 3.5**
+
+    Property-based test: GDPR handler uses the no-short-circuit deletion
+    pattern. deleted_count + len(failed_memory_ids) == total_records,
+    and the return structure has status, user_id, deleted_count,
+    failed_memory_ids.
+    """
+
+    @given(
+        num_records=st.integers(min_value=1, max_value=50),
+    )
+    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    def test_gdpr_no_short_circuit_all_succeed(self, num_records):
+        """
+        **Validates: Requirements 3.5**
+
+        Property: For any set of user memory records, GDPR handler processes
+        all records (no short-circuit), and deleted_count + len(failed_memory_ids)
+        == total_records.
+        """
+        memories = [
+            {"memoryRecordId": f"rec-{i}"}
+            for i in range(num_records)
+        ]
+
+        mock_client = MagicMock()
+        mock_client.list_memory_records.return_value = {
+            "memoryRecordSummaries": memories,
+        }
+        mock_client.delete_memory_record.return_value = {}
+
+        event = {
+            "user_id": "user-test-123",
+            "memory_id": "mem-container-1",
+        }
+
+        with patch("boto3.client", return_value=mock_client):
+            from gdpr_deletion.handler import handler as gdpr_handler
+            result = gdpr_handler(event, None)
+
+        # Return structure must have these keys
+        assert "status" in result
+        assert "user_id" in result
+        assert "deleted_count" in result
+        assert "failed_memory_ids" in result
+
+        # No-short-circuit: all records processed
+        total_records = len(memories)
+        assert result["deleted_count"] + len(result["failed_memory_ids"]) == total_records, (
+            f"deleted_count({result['deleted_count']}) + failed({len(result['failed_memory_ids'])}) "
+            f"!= total_records({total_records})"
+        )
+
+    @given(
+        num_records=st.integers(min_value=2, max_value=30),
+        fail_indices=st.lists(st.integers(min_value=0, max_value=29), min_size=1, max_size=10),
+    )
+    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    def test_gdpr_no_short_circuit_partial_failure(self, num_records, fail_indices):
+        """
+        **Validates: Requirements 3.5**
+
+        Property: When some deletions fail, GDPR handler still processes all
+        records and correctly reports partial_failure.
+        """
+        memories = [
+            {"memoryRecordId": f"rec-{i}"}
+            for i in range(num_records)
+        ]
+        valid_fail_indices = set(i % num_records for i in fail_indices)
+
+        mock_client = MagicMock()
+        mock_client.list_memory_records.return_value = {
+            "memoryRecordSummaries": memories,
+        }
+
+        call_count = [0]
+
+        def side_effect(**kwargs):
+            idx = call_count[0]
+            call_count[0] += 1
+            if idx in valid_fail_indices:
+                raise Exception(f"Simulated failure for index {idx}")
+            return {}
+
+        mock_client.delete_memory_record.side_effect = side_effect
+
+        event = {
+            "user_id": "user-test-456",
+            "memory_id": "mem-container-1",
+        }
+
+        with patch("boto3.client", return_value=mock_client):
+            from gdpr_deletion.handler import handler as gdpr_handler
+            result = gdpr_handler(event, None)
+
+        total_records = len(memories)
+        assert result["deleted_count"] + len(result["failed_memory_ids"]) == total_records
+        assert len(result["failed_memory_ids"]) == len(valid_fail_indices)
+        if valid_fail_indices:
+            assert result["status"] == "partial_failure"
+
+
+# ===================================================================
+# Preservation 5 — decay_rate_from_prune_days
+# ===================================================================
+
+class TestPreservation5DecayRateFromPruneDays:
+    """
+    **Validates: Requirements 3.1**
+
+    Property-based test: for all valid (prune_days, threshold),
+    decay_rate_from_prune_days returns -ln(threshold) / prune_days.
+    Also verifies ValueError for invalid inputs.
+    """
+
+    @given(
+        prune_days=st.integers(min_value=1, max_value=365),
+        threshold=st.floats(min_value=0.01, max_value=0.99),
+    )
+    @settings(max_examples=300, suppress_health_check=[HealthCheck.too_slow])
+    def test_decay_rate_matches_formula(self, prune_days, threshold):
+        """
+        **Validates: Requirements 3.1**
+
+        Property: For all valid (prune_days, threshold),
+        result equals -ln(threshold) / prune_days.
+        """
+        assume(not math.isnan(threshold))
+
+        result = decay_rate_from_prune_days(prune_days, threshold)
+        expected = -math.log(threshold) / prune_days
+        assert abs(result - expected) < 1e-9, (
+            f"decay_rate {result} != expected {expected} for "
+            f"prune_days={prune_days}, threshold={threshold}"
+        )
+
+    @given(
+        prune_days=st.integers(min_value=-100, max_value=0),
+    )
+    @settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
+    def test_decay_rate_invalid_prune_days(self, prune_days):
+        """
+        **Validates: Requirements 3.1**
+
+        Property: prune_days <= 0 raises ValueError.
+        """
+        with pytest.raises(ValueError):
+            decay_rate_from_prune_days(prune_days, 0.3)
+
+    @given(
+        threshold=st.one_of(
+            st.floats(max_value=0.0),
+            st.floats(min_value=1.0),
+        ),
+    )
+    @settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
+    def test_decay_rate_invalid_threshold(self, threshold):
+        """
+        **Validates: Requirements 3.1**
+
+        Property: threshold <= 0 or >= 1 raises ValueError.
+        """
+        assume(not math.isnan(threshold))
+        with pytest.raises(ValueError):
+            decay_rate_from_prune_days(45, threshold)
+
+
+# ===================================================================
 # Static File Assertions — CDK Stack IAM Permissions
 # ===================================================================
 
 class TestCDKIAMPreservation:
     """
-    **Validates: Requirements 3.1, 3.2**
+    **Validates: Requirements 3.6**
 
     Verify that IAM permissions for Memory Scorer, Memory Consolidator,
     Memory Pruner, and GDPR handler's DeleteMemoryRecord are present
@@ -76,9 +542,10 @@ class TestCDKIAMPreservation:
 
     def test_memory_scorer_iam_permissions(self):
         """
-        **Validates: Requirements 3.2**
+        **Validates: Requirements 3.6**
 
-        Memory Scorer must have ListMemoryRecords and BatchUpdateMemoryRecords.
+        Memory Scorer must have ListMemoryRecords only (read-only).
+        BatchUpdateMemoryRecords was intentionally removed — scorer no longer writes.
         """
         content = _read(CDK_STACK_PATH)
         scorer_match = re.search(
@@ -91,13 +558,13 @@ class TestCDKIAMPreservation:
         assert "ListMemoryRecords" in actions, (
             "Memory Scorer IAM missing ListMemoryRecords"
         )
-        assert "BatchUpdateMemoryRecords" in actions, (
-            "Memory Scorer IAM missing BatchUpdateMemoryRecords"
+        assert "BatchUpdateMemoryRecords" not in actions, (
+            "Memory Scorer IAM should NOT have BatchUpdateMemoryRecords — scorer is read-only"
         )
 
     def test_memory_consolidator_iam_permissions(self):
         """
-        **Validates: Requirements 3.2**
+        **Validates: Requirements 3.6**
 
         Memory Consolidator must have GetMemoryRecord, BatchCreateMemoryRecords,
         DeleteMemoryRecord, and bedrock:InvokeModel.
@@ -130,7 +597,7 @@ class TestCDKIAMPreservation:
 
     def test_memory_pruner_iam_permission(self):
         """
-        **Validates: Requirements 3.2**
+        **Validates: Requirements 3.6**
 
         Memory Pruner must have DeleteMemoryRecord.
         """
@@ -148,7 +615,7 @@ class TestCDKIAMPreservation:
 
     def test_gdpr_handler_delete_permission(self):
         """
-        **Validates: Requirements 3.1**
+        **Validates: Requirements 3.6**
 
         GDPR handler must have DeleteMemoryRecord permission.
         """
@@ -213,14 +680,14 @@ class TestCDKInfrastructurePreservation:
 
 class TestPackageJsonPreservation:
     """
-    **Validates: Requirements 3.10**
+    **Validates: Requirements 3.6**
 
     Verify aws-cdk-lib version ^2.249.0 is unchanged in package.json.
     """
 
     def test_aws_cdk_lib_version_unchanged(self):
         """
-        **Validates: Requirements 3.10**
+        **Validates: Requirements 3.6**
 
         aws-cdk-lib version must be ^2.249.0.
         """
@@ -239,7 +706,7 @@ class TestPackageJsonPreservation:
 
 class TestBlogNarrativePreservation:
     """
-    **Validates: Requirements 3.9**
+    **Validates: Requirements 3.8**
 
     Verify blog.md contains key phrases about memory lifecycle,
     relevance decay, and GDPR.
@@ -247,7 +714,7 @@ class TestBlogNarrativePreservation:
 
     def test_blog_key_phrases_preserved(self):
         """
-        **Validates: Requirements 3.9**
+        **Validates: Requirements 3.8**
 
         Blog must contain 'memory lifecycle', 'relevance decay', and 'GDPR'.
         """
@@ -260,86 +727,6 @@ class TestBlogNarrativePreservation:
         )
         assert "GDPR" in content, (
             "Blog missing key phrase: 'GDPR'"
-        )
-
-
-# ===================================================================
-# PBT — compute_relevance_score
-# ===================================================================
-
-class TestComputeRelevanceScorePBT:
-    """
-    **Validates: Requirements 3.4**
-
-    Property-based test: for all valid inputs, compute_relevance_score
-    returns a value in [0.0, 1.0] that matches the expected formula
-    0.5 * exp(-decay_rate * d1) + 0.5 * exp(-decay_rate * d2).
-    """
-
-    @given(
-        decay_rate=st.floats(min_value=0.001, max_value=2.0),
-        days_created=st.integers(min_value=0, max_value=1000),
-        days_accessed=st.integers(min_value=0, max_value=1000),
-    )
-    @settings(max_examples=300, suppress_health_check=[HealthCheck.too_slow])
-    def test_score_in_range_and_matches_formula(
-        self, decay_rate, days_created, days_accessed
-    ):
-        """
-        **Validates: Requirements 3.4**
-
-        Property: For all valid (decay_rate, days_created, days_accessed),
-        score is in [0.0, 1.0] and equals
-        0.5 * exp(-decay_rate * d1) + 0.5 * exp(-decay_rate * d2).
-        """
-        now = datetime(2025, 7, 1, 0, 0, 0, tzinfo=timezone.utc)
-        created_at = now - timedelta(days=days_created)
-        last_accessed_at = now - timedelta(days=days_accessed)
-
-        score = compute_relevance_score(created_at, last_accessed_at, decay_rate, now)
-
-        assert isinstance(score, float)
-        assert 0.0 <= score <= 1.0, f"Score {score} out of [0.0, 1.0]"
-
-        expected = (
-            0.5 * math.exp(-decay_rate * days_created)
-            + 0.5 * math.exp(-decay_rate * days_accessed)
-        )
-        assert abs(score - expected) < 1e-9, (
-            f"Score {score} != expected {expected} for "
-            f"decay_rate={decay_rate}, d1={days_created}, d2={days_accessed}"
-        )
-
-
-# ===================================================================
-# PBT — decay_rate_from_prune_days
-# ===================================================================
-
-class TestDecayRateFromPruneDaysPBT:
-    """
-    **Validates: Requirements 3.4**
-
-    Property-based test: for all valid (prune_days, threshold),
-    decay_rate_from_prune_days returns -ln(threshold) / prune_days.
-    """
-
-    @given(
-        prune_days=st.integers(min_value=1, max_value=365),
-        threshold=st.floats(min_value=0.01, max_value=0.99),
-    )
-    @settings(max_examples=300, suppress_health_check=[HealthCheck.too_slow])
-    def test_decay_rate_matches_formula(self, prune_days, threshold):
-        """
-        **Validates: Requirements 3.4**
-
-        Property: For all valid (prune_days, threshold),
-        result equals -ln(threshold) / prune_days.
-        """
-        result = decay_rate_from_prune_days(prune_days, threshold)
-        expected = -math.log(threshold) / prune_days
-        assert abs(result - expected) < 1e-9, (
-            f"decay_rate {result} != expected {expected} for "
-            f"prune_days={prune_days}, threshold={threshold}"
         )
 
 
@@ -500,7 +887,7 @@ class TestHandlerStructuredLogging:
 
 class TestConsolidator4StepFlow:
     """
-    **Validates: Requirements 3.5**
+    **Validates: Requirements 3.4**
 
     Memory Consolidator must have 4-step flow markers:
     retrieve, invoke Bedrock, store consolidated, delete originals.
@@ -508,7 +895,7 @@ class TestConsolidator4StepFlow:
 
     def test_consolidator_has_4_step_markers(self):
         """
-        **Validates: Requirements 3.5**
+        **Validates: Requirements 3.4**
 
         The consolidator must contain step markers for its 4-step flow.
         """
@@ -526,7 +913,7 @@ class TestConsolidator4StepFlow:
 
 class TestNoShortCircuitPattern:
     """
-    **Validates: Requirements 3.6**
+    **Validates: Requirements 3.3, 3.5**
 
     Memory Pruner and GDPR handler must have no-short-circuit pattern:
     try/except inside a for loop (continues on individual failures).
@@ -534,7 +921,7 @@ class TestNoShortCircuitPattern:
 
     def test_pruner_no_short_circuit(self):
         """
-        **Validates: Requirements 3.6**
+        **Validates: Requirements 3.3**
 
         Pruner must have try/except inside a for loop.
         """
@@ -550,7 +937,7 @@ class TestNoShortCircuitPattern:
 
     def test_gdpr_handler_no_short_circuit(self):
         """
-        **Validates: Requirements 3.6**
+        **Validates: Requirements 3.5**
 
         GDPR handler must have try/except inside a for loop.
         """

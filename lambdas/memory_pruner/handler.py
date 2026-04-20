@@ -130,10 +130,19 @@ def handler(event: dict, context) -> dict:
         "timestamp": now.isoformat(),
     }))
 
-    # Retrieve all memory records
+    # Retrieve all memory records (paginated)
     try:
-        response = client.list_memory_records(memoryId=memory_id)
-        memories = response.get("memoryRecordSummaries", [])
+        memories = []
+        next_token = None
+        while True:
+            kwargs = {"memoryId": memory_id, "namespace": agent_id}
+            if next_token is not None:
+                kwargs["nextToken"] = next_token
+            response = client.list_memory_records(**kwargs)
+            memories.extend(response.get("memoryRecordSummaries", []))
+            next_token = response.get("nextToken")
+            if not next_token:
+                break
     except (ClientError, EndpointConnectionError, Exception) as exc:
         error_msg = f"Failed to list memory records: {exc}"
         logger.error(json.dumps({
@@ -154,7 +163,7 @@ def handler(event: dict, context) -> dict:
     cutoff = now - timedelta(days=ttl_days)
     expired_ids = []
     for memory in memories:
-        created_at = datetime.fromtimestamp(memory["createdAt"])
+        created_at = memory["createdAt"]
         if created_at < cutoff:
             expired_ids.append(memory["memoryRecordId"])
 

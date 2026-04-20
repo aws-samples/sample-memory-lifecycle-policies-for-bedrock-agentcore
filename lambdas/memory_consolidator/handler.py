@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 
 import boto3
@@ -165,6 +166,7 @@ def handler(event: dict, context) -> dict:
                 "content": {"text": summary},
                 "timestamp": now,
                 "namespaces": [agent_id],
+                "requestIdentifier": str(uuid.uuid4()),
             }],
         )
         consolidated_memory_id = create_response["successfulRecords"][0]["memoryRecordId"]
