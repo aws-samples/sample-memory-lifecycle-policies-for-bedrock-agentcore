@@ -1,0 +1,209 @@
+<mxfile host="app.diagrams.net" modified="2026-04-20T00:00:00.000Z" agent="draw.io" version="24.0.0" type="device">
+  <diagram id="memory-lifecycle-architecture" name="Memory Lifecycle Architecture">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ==================== -->
+        <!-- ROW 1: Trigger -->
+        <!-- ==================== -->
+
+        <mxCell id="eb" value="Amazon EventBridge&#xa;cron(0 2 * * ? *)" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.eventbridge;" vertex="1" parent="1">
+          <mxGeometry x="530" y="30" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== -->
+        <!-- ROW 2: Orchestrator + SNS -->
+        <!-- ==================== -->
+
+        <mxCell id="sf" value="AWS Step Functions&#xa;Memory Lifecycle Workflow" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.step_functions;" vertex="1" parent="1">
+          <mxGeometry x="530" y="200" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sns" value="Amazon SNS&#xa;Failure Alerts" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.sns;" vertex="1" parent="1">
+          <mxGeometry x="100" y="200" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== -->
+        <!-- ROW 3: Lambda Functions -->
+        <!-- ==================== -->
+
+        <mxCell id="grp_workflow" value="Lambda Functions (invoked by Step Functions)" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_region;strokeColor=#ED7100;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;spacingTop=5;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="60" y="390" width="1100" height="160" as="geometry" />
+        </mxCell>
+
+        <mxCell id="mp" value="Memory&#xa;Pruner" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.lambda_function;" vertex="1" parent="1">
+          <mxGeometry x="130" y="440" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ms" value="Memory&#xa;Scorer" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.lambda_function;" vertex="1" parent="1">
+          <mxGeometry x="350" y="440" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="mc" value="Memory&#xa;Consolidator" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.lambda_function;" vertex="1" parent="1">
+          <mxGeometry x="570" y="440" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="me" value="Metrics&#xa;Emitter" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.lambda_function;" vertex="1" parent="1">
+          <mxGeometry x="790" y="440" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="rw" value="Run Output&#xa;Writer" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.lambda_function;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="440" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- GDPR — separate group -->
+        <mxCell id="grp_gdpr" value="On-Demand" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_region;strokeColor=#DD3522;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;spacingTop=5;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="390" width="160" height="160" as="geometry" />
+        </mxCell>
+
+        <mxCell id="gd" value="GDPR Deletion&#xa;Handler" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.lambda_function;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="440" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== -->
+        <!-- ROW 4: Backend Services -->
+        <!-- ==================== -->
+
+        <mxCell id="ct" value="AWS CloudTrail&#xa;Audit Trail" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.cloudtrail;" vertex="1" parent="1">
+          <mxGeometry x="80" y="720" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ct_s3" value="Amazon S3&#xa;Trail Bucket" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#3F8624;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.s3;" vertex="1" parent="1">
+          <mxGeometry x="280" y="720" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="acm" value="Amazon Bedrock&#xa;AgentCore Memory" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
+          <mxGeometry x="480" y="720" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="br" value="Amazon Bedrock&#xa;Claude Sonnet" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
+          <mxGeometry x="680" y="720" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cw" value="Amazon CloudWatch&#xa;Logs + Dashboard" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.cloudwatch;" vertex="1" parent="1">
+          <mxGeometry x="880" y="720" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ro_s3" value="Amazon S3&#xa;Run Output Bucket" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#3F8624;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=0;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.s3;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="720" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== -->
+        <!-- EDGES — all black (#000000) -->
+        <!-- ==================== -->
+
+        <!-- EventBridge -> Step Functions -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=2;" edge="1" source="eb" target="sf" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- SF -> Memory Pruner (Step 1) -->
+        <mxCell id="e2" value="Step 1: TTL expiration" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;strokeColor=#000000;strokeWidth=2;fontSize=9;fontColor=#000000;html=0;" edge="1" source="sf" target="mp" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- SF -> Memory Scorer (Step 2) -->
+        <mxCell id="e3" value="Step 2: score memories" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;strokeColor=#000000;strokeWidth=2;fontSize=9;fontColor=#000000;html=0;" edge="1" source="sf" target="ms" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- SF -> Memory Consolidator (Step 3) -->
+        <mxCell id="e4" value="Step 3: consolidate (conditional)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;strokeColor=#000000;strokeWidth=2;fontSize=9;fontColor=#000000;html=0;" edge="1" source="sf" target="mc" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- SF -> Metrics Emitter (Step 4) -->
+        <mxCell id="e5" value="Step 4: emit metrics" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;strokeColor=#000000;strokeWidth=2;fontSize=9;fontColor=#000000;html=0;" edge="1" source="sf" target="me" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- SF -> Run Output Writer (Step 5) -->
+        <mxCell id="e6" value="Step 5: write output" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;strokeColor=#000000;strokeWidth=2;fontSize=9;fontColor=#000000;html=0;" edge="1" source="sf" target="rw" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- SF -> SNS (on failure) -->
+        <mxCell id="e9" value="on failure" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=1;fontSize=10;dashed=1;html=0;" edge="1" source="sf" target="sns" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Memory Pruner -> AgentCore Memory -->
+        <mxCell id="e_mp_acm" value="list / delete" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=1;fontSize=9;html=0;" edge="1" source="mp" target="acm" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Memory Scorer -> AgentCore Memory -->
+        <mxCell id="e_ms_acm" value="list memories" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=1;fontSize=9;html=0;" edge="1" source="ms" target="acm" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Memory Scorer -> CloudTrail S3 Bucket -->
+        <mxCell id="e_ms_cts3" value="read access logs" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=1;fontSize=9;dashed=1;html=0;" edge="1" source="ms" target="ct_s3" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Memory Scorer -> Run Output S3 Bucket -->
+        <mxCell id="e_ms_ros3" value="read/write access ledger" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=1;fontSize=9;dashed=1;html=0;" edge="1" source="ms" target="ro_s3" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="410" y="620" />
+              <mxPoint x="1110" y="620" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Memory Consolidator -> AgentCore Memory -->
+        <mxCell id="e_mc_acm" value="read / write / delete" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=1;fontSize=9;html=0;" edge="1" source="mc" target="acm" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Consolidator -> Bedrock -->
+        <mxCell id="e7" value="invoke model" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=1;fontSize=9;html=0;" edge="1" source="mc" target="br" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Metrics Emitter -> CloudWatch -->
+        <mxCell id="e_me_cw" value="put metrics" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=1;fontSize=9;html=0;" edge="1" source="me" target="cw" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Run Output Writer -> Run Output S3 Bucket -->
+        <mxCell id="e_rw_ros3" value="put object" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=1;fontSize=9;html=0;" edge="1" source="rw" target="ro_s3" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- GDPR -> AgentCore Memory -->
+        <mxCell id="e8" value="list / delete" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=1;fontSize=9;html=0;" edge="1" source="gd" target="acm" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1320" y="750" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- AgentCore Memory -> CloudTrail -->
+        <mxCell id="e11" value="API audit" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=1;fontSize=9;dashed=1;html=0;" edge="1" source="acm" target="ct" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- CloudTrail -> Trail S3 Bucket -->
+        <mxCell id="e_ct_s3" value="store logs" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=1;fontSize=9;dashed=1;html=0;" edge="1" source="ct" target="ct_s3" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- All Lambdas -> CloudWatch (logs) -->
+        <mxCell id="e10" value="structured JSON logs (all Lambdas)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0;entryDx=0;entryDy=0;strokeColor=#000000;strokeWidth=1;fontSize=9;dashed=1;html=0;" edge="1" source="gd" target="cw" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1320" y="660" />
+              <mxPoint x="940" y="660" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
