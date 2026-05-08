@@ -1,0 +1,435 @@
+{
+  "schema": 1,
+  "applicationInfo": {
+    "name": "Threat Model Export",
+    "description": "An automated memory lifecycle management system for Amazon Bedrock AgentCore AI agents. The system scores, consolidates, prunes, and deletes agent memories using a nightly Step Functions workflow. It handles sensitive AI agent memory data including user interactions, preferences, and behavioral patterns. The system includes GDPR right-to-be-forgotten support for user data deletion and full observability through CloudWatch and CloudTrail. It processes AI agent memories that may contain PII, user preferences, and conversation history."
+  },
+  "architecture": {
+    "description": ""
+  },
+  "dataflow": {
+    "description": ""
+  },
+  "assumptions": [
+    {
+      "id": "A001",
+      "numericId": 1,
+      "content": "The system operates within a single AWS region and does not replicate data across regions",
+      "displayOrder": 1,
+      "metadata": []
+    },
+    {
+      "id": "A002",
+      "numericId": 2,
+      "content": "Agent memories may contain PII, user preferences, and conversation history that falls under GDPR regulation",
+      "displayOrder": 2,
+      "metadata": []
+    },
+    {
+      "id": "A003",
+      "numericId": 3,
+      "content": "The nightly workflow runs unattended at 2 AM UTC without human oversight",
+      "displayOrder": 3,
+      "metadata": []
+    },
+    {
+      "id": "A004",
+      "numericId": 4,
+      "content": "Amazon Bedrock model invocations for memory consolidation may expose memory content to the model provider",
+      "displayOrder": 4,
+      "metadata": []
+    }
+  ],
+  "mitigations": [
+    {
+      "id": "29241027-bb44-4f09-bd25-f006118a752b",
+      "numericId": 1,
+      "status": "mitigationIdentified",
+      "content": "Implement authentication and authorization for GDPR Deletion Lambda invocations. Require verified identity (e.g., API Gateway with Cognito authorizer or IAM auth) before processing deletion requests.",
+      "displayOrder": 1,
+      "metadata": []
+    },
+    {
+      "id": "55bd4698-a565-4cac-87c7-23336ca7101e",
+      "numericId": 2,
+      "status": "mitigationIdentified",
+      "content": "Implement rate limiting and throttling on the GDPR Deletion Lambda to prevent abuse and denial of service attacks.",
+      "displayOrder": 2,
+      "metadata": []
+    },
+    {
+      "id": "f959e0e2-a734-4f6a-a8d1-a27f6b9e1863",
+      "numericId": 3,
+      "status": "mitigationIdentified",
+      "content": "Enable CloudTrail log file integrity validation and configure S3 Object Lock to prevent audit log tampering or deletion.",
+      "displayOrder": 3,
+      "metadata": []
+    },
+    {
+      "id": "20540b3c-c125-4f64-9add-63d85fe21021",
+      "numericId": 4,
+      "status": "mitigationIdentified",
+      "content": "Implement input validation on the GDPR Deletion Lambda to verify user_id format and prevent injection attacks. Add request logging with caller identity.",
+      "displayOrder": 4,
+      "metadata": []
+    },
+    {
+      "id": "a9de2302-d524-4cc1-9bf2-b0a9a1b64ad2",
+      "numericId": 5,
+      "status": "mitigationIdentified",
+      "content": "Implement soft-delete with retention period before permanent memory deletion to allow recovery from accidental or malicious mass deletions.",
+      "displayOrder": 5,
+      "metadata": []
+    },
+    {
+      "id": "2d5fd0ff-a30c-4e78-9d95-b6199ff9bb58",
+      "numericId": 6,
+      "status": "mitigationIdentified",
+      "content": "Pin Python dependency versions and use hash verification in requirements.txt. Implement dependency scanning in CI/CD pipeline.",
+      "displayOrder": 6,
+      "metadata": []
+    },
+    {
+      "id": "bd138d79-9c60-400a-bf80-b790a8c8de6a",
+      "numericId": 7,
+      "status": "mitigationIdentified",
+      "content": "Implement prompt injection defenses in the Memory Consolidator by sanitizing memory content before sending to Bedrock and validating model output format.",
+      "displayOrder": 7,
+      "metadata": []
+    },
+    {
+      "id": "f2c1e0df-987a-40ca-8a99-be4142d8f3c8",
+      "numericId": 8,
+      "status": "mitigationIdentified",
+      "content": "Restrict Step Functions execution permissions to only the EventBridge rule. Add CloudWatch alarms for unscheduled executions.",
+      "displayOrder": 8,
+      "metadata": []
+    },
+    {
+      "id": "2f9932c5-4824-4f20-9ab7-c39a49af702f",
+      "numericId": 9,
+      "status": "mitigationIdentified",
+      "content": "Enable SNS topic encryption with KMS and enforce SSL for SNS subscriptions to protect failure notification content.",
+      "displayOrder": 9,
+      "metadata": []
+    },
+    {
+      "id": "0bc669ec-cce2-48d5-8a5a-a101c27b33e1",
+      "numericId": 10,
+      "status": "mitigationIdentified",
+      "content": "Implement least-privilege IAM policies with condition keys to restrict Lambda access to specific memory namespaces and prevent cross-tenant access.",
+      "displayOrder": 10,
+      "metadata": []
+    },
+    {
+      "id": "3ab36e0d-660a-413c-bc54-b0c4b007b913",
+      "numericId": 11,
+      "status": "mitigationIdentified",
+      "content": "Redact or mask sensitive data (user IDs, memory content) in CloudWatch Logs. Implement log access controls with IAM policies scoped to specific log groups.",
+      "displayOrder": 11,
+      "metadata": []
+    }
+  ],
+  "assumptionLinks": [],
+  "mitigationLinks": [
+    {
+      "linkedId": "9b0cf2b6-8f44-4bcc-8fb7-0f886cdd5501",
+      "mitigationId": "29241027-bb44-4f09-bd25-f006118a752b"
+    },
+    {
+      "linkedId": "9b0cf2b6-8f44-4bcc-8fb7-0f886cdd5501",
+      "mitigationId": "20540b3c-c125-4f64-9add-63d85fe21021"
+    },
+    {
+      "linkedId": "20fd9047-95a5-4559-a686-e12e5f8d280f",
+      "mitigationId": "55bd4698-a565-4cac-87c7-23336ca7101e"
+    },
+    {
+      "linkedId": "20fd9047-95a5-4559-a686-e12e5f8d280f",
+      "mitigationId": "29241027-bb44-4f09-bd25-f006118a752b"
+    },
+    {
+      "linkedId": "1a4a68f6-c5a8-42dc-ac8d-2a70e19a30d5",
+      "mitigationId": "29241027-bb44-4f09-bd25-f006118a752b"
+    },
+    {
+      "linkedId": "1a4a68f6-c5a8-42dc-ac8d-2a70e19a30d5",
+      "mitigationId": "20540b3c-c125-4f64-9add-63d85fe21021"
+    },
+    {
+      "linkedId": "8ff0ccb3-7d38-49a0-8e51-91939ad2fe36",
+      "mitigationId": "0bc669ec-cce2-48d5-8a5a-a101c27b33e1"
+    },
+    {
+      "linkedId": "b688305d-2f55-48a2-8560-759502f3bbeb",
+      "mitigationId": "f959e0e2-a734-4f6a-a8d1-a27f6b9e1863"
+    },
+    {
+      "linkedId": "f9d02513-ad9d-485a-8ccc-c4ba0f44f971",
+      "mitigationId": "3ab36e0d-660a-413c-bc54-b0c4b007b913"
+    },
+    {
+      "linkedId": "27f14677-0a45-4d9b-85dd-dc6cc772db57",
+      "mitigationId": "3ab36e0d-660a-413c-bc54-b0c4b007b913"
+    },
+    {
+      "linkedId": "cd8fd384-bc38-4c76-b73a-3b006c5fbcf2",
+      "mitigationId": "bd138d79-9c60-400a-bf80-b790a8c8de6a"
+    },
+    {
+      "linkedId": "9bb3ee5e-1308-476c-90c0-73a011bab76f",
+      "mitigationId": "2d5fd0ff-a30c-4e78-9d95-b6199ff9bb58"
+    },
+    {
+      "linkedId": "8fe2b81b-6742-48ab-a1d2-3143683194c6",
+      "mitigationId": "a9de2302-d524-4cc1-9bf2-b0a9a1b64ad2"
+    },
+    {
+      "linkedId": "9b0cf2b6-8f44-4bcc-8fb7-0f886cdd5501",
+      "mitigationId": "a9de2302-d524-4cc1-9bf2-b0a9a1b64ad2"
+    },
+    {
+      "linkedId": "8fe2b81b-6742-48ab-a1d2-3143683194c6",
+      "mitigationId": "f2c1e0df-987a-40ca-8a99-be4142d8f3c8"
+    },
+    {
+      "linkedId": "ac82336d-fa94-41d9-9046-68718a7eb484",
+      "mitigationId": "0bc669ec-cce2-48d5-8a5a-a101c27b33e1"
+    }
+  ],
+  "threats": [
+    {
+      "id": "9b0cf2b6-8f44-4bcc-8fb7-0f886cdd5501",
+      "numericId": 1,
+      "threatSource": "External attacker or malicious user",
+      "prerequisites": "with ability to invoke the GDPR Deletion Lambda",
+      "threatAction": "invoke GDPR deletion with a forged user_id to delete another user's memories",
+      "threatImpact": "unauthorized deletion of all memories for a victim user, causing data loss and service degradation",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008"
+      ],
+      "statement": "A External attacker or malicious user with ability to invoke the GDPR Deletion Lambda can invoke GDPR deletion with a forged user_id to delete another user's memories, which leads to unauthorized deletion of all memories for a victim user, causing data loss and service degradation",
+      "displayOrder": 1,
+      "status": "threatIdentified",
+      "tags": [
+        "STRIDE-S",
+        "GDPR",
+        "Authentication"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "f9d02513-ad9d-485a-8ccc-c4ba0f44f971",
+      "numericId": 2,
+      "threatSource": "Insider with AWS account access",
+      "prerequisites": "with access to Bedrock model invocation logs or model provider systems",
+      "threatAction": "extract sensitive memory content from Bedrock model invocation data or prompt logs",
+      "threatImpact": "exposure of confidential user memory data including PII and conversation history",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008",
+        "A012"
+      ],
+      "statement": "A Insider with AWS account access with access to Bedrock model invocation logs or model provider systems can extract sensitive memory content from Bedrock model invocation data or prompt logs, which leads to exposure of confidential user memory data including PII and conversation history",
+      "displayOrder": 2,
+      "status": "threatIdentified",
+      "tags": [
+        "STRIDE-I",
+        "AI",
+        "Data-Leakage"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "ac82336d-fa94-41d9-9046-68718a7eb484",
+      "numericId": 3,
+      "threatSource": "Malicious insider or compromised CI/CD pipeline",
+      "prerequisites": "with ability to modify scoring parameters or Lambda environment variables",
+      "threatAction": "manipulate relevance threshold or decay rate to cause premature deletion of valuable memories",
+      "threatImpact": "mass deletion of important agent memories, degrading AI agent quality and user experience",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008"
+      ],
+      "statement": "A Malicious insider or compromised CI/CD pipeline with ability to modify scoring parameters or Lambda environment variables can manipulate relevance threshold or decay rate to cause premature deletion of valuable memories, which leads to mass deletion of important agent memories, degrading AI agent quality and user experience",
+      "displayOrder": 3,
+      "status": "threatIdentified",
+      "tags": [
+        "STRIDE-T",
+        "Scoring",
+        "Configuration"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "b688305d-2f55-48a2-8560-759502f3bbeb",
+      "numericId": 4,
+      "threatSource": "Insider with elevated AWS permissions",
+      "prerequisites": "with S3 write access to the CloudTrail bucket",
+      "threatAction": "modify or delete CloudTrail audit logs to hide unauthorized memory access or deletion",
+      "threatImpact": "loss of audit trail for GDPR compliance, inability to detect unauthorized data access",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A010"
+      ],
+      "statement": "A Insider with elevated AWS permissions with S3 write access to the CloudTrail bucket can modify or delete CloudTrail audit logs to hide unauthorized memory access or deletion, which leads to loss of audit trail for GDPR compliance, inability to detect unauthorized data access",
+      "displayOrder": 4,
+      "status": "threatIdentified",
+      "tags": [
+        "STRIDE-T",
+        "Audit",
+        "Compliance"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "20fd9047-95a5-4559-a686-e12e5f8d280f",
+      "numericId": 5,
+      "threatSource": "Automated bot or malicious user",
+      "prerequisites": "with ability to invoke the GDPR Deletion Lambda repeatedly",
+      "threatAction": "flood GDPR deletion endpoint with requests to exhaust Lambda concurrency or API rate limits",
+      "threatImpact": "denial of service for legitimate GDPR requests and potential impact on nightly workflow",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008"
+      ],
+      "statement": "A Automated bot or malicious user with ability to invoke the GDPR Deletion Lambda repeatedly can flood GDPR deletion endpoint with requests to exhaust Lambda concurrency or API rate limits, which leads to denial of service for legitimate GDPR requests and potential impact on nightly workflow",
+      "displayOrder": 5,
+      "status": "threatIdentified",
+      "tags": [
+        "STRIDE-D",
+        "GDPR",
+        "Abuse"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "cd8fd384-bc38-4c76-b73a-3b006c5fbcf2",
+      "numericId": 6,
+      "threatSource": "Attacker who can write to agent memories",
+      "prerequisites": "with ability to manipulate Bedrock model responses",
+      "threatAction": "inject malicious content into memory text that manipulates the consolidation prompt to produce harmful summaries",
+      "threatImpact": "corrupted consolidated memories containing injected content, misinformation, or data exfiltration payloads",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008"
+      ],
+      "statement": "A Attacker who can write to agent memories with ability to manipulate Bedrock model responses can inject malicious content into memory text that manipulates the consolidation prompt to produce harmful summaries, which leads to corrupted consolidated memories containing injected content, misinformation, or data exfiltration payloads",
+      "displayOrder": 6,
+      "status": "threatIdentified",
+      "tags": [
+        "STRIDE-T",
+        "AI",
+        "Prompt-Injection"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "8ff0ccb3-7d38-49a0-8e51-91939ad2fe36",
+      "numericId": 7,
+      "threatSource": "External attacker exploiting vulnerable dependency",
+      "prerequisites": "with access to Lambda execution environment or compromised dependency",
+      "threatAction": "exploit Lambda IAM role to access resources beyond intended scope or escalate to other AWS services",
+      "threatImpact": "unauthorized access to all AgentCore memories, S3 data, or lateral movement to other AWS services",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A011"
+      ],
+      "statement": "A External attacker exploiting vulnerable dependency with access to Lambda execution environment or compromised dependency can exploit Lambda IAM role to access resources beyond intended scope or escalate to other AWS services, which leads to unauthorized access to all AgentCore memories, S3 data, or lateral movement to other AWS services",
+      "displayOrder": 7,
+      "status": "threatIdentified",
+      "tags": [
+        "STRIDE-E",
+        "IAM",
+        "Privilege-Escalation"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "8fe2b81b-6742-48ab-a1d2-3143683194c6",
+      "numericId": 8,
+      "threatSource": "Insider or attacker with Step Functions execution permissions",
+      "prerequisites": "with ability to trigger the Step Functions workflow or modify its input",
+      "threatAction": "trigger unscheduled workflow execution or manipulate scoring results to cause mass memory deletion",
+      "threatImpact": "irreversible loss of agent memories at scale, degrading AI agent capabilities",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008"
+      ],
+      "statement": "A Insider or attacker with Step Functions execution permissions with ability to trigger the Step Functions workflow or modify its input can trigger unscheduled workflow execution or manipulate scoring results to cause mass memory deletion, which leads to irreversible loss of agent memories at scale, degrading AI agent capabilities",
+      "displayOrder": 8,
+      "status": "threatIdentified",
+      "tags": [
+        "STRIDE-D",
+        "Workflow",
+        "Data-Loss"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "1a4a68f6-c5a8-42dc-ac8d-2a70e19a30d5",
+      "numericId": 9,
+      "threatSource": "Any caller with Lambda invoke access",
+      "prerequisites": "with ability to invoke GDPR deletion Lambda",
+      "threatAction": "invoke GDPR deletion without proper identity verification, making it impossible to verify legitimacy",
+      "threatImpact": "inability to prove deletion was requested by the actual data subject, GDPR compliance risk",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008",
+        "A009"
+      ],
+      "statement": "A Any caller with Lambda invoke access with ability to invoke GDPR deletion Lambda can invoke GDPR deletion without proper identity verification, making it impossible to verify legitimacy, which leads to inability to prove deletion was requested by the actual data subject, GDPR compliance risk",
+      "displayOrder": 9,
+      "status": "threatIdentified",
+      "tags": [
+        "STRIDE-R",
+        "GDPR",
+        "Audit"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "27f14677-0a45-4d9b-85dd-dc6cc772db57",
+      "numericId": 10,
+      "threatSource": "Insider with CloudWatch Logs read access",
+      "prerequisites": "with access to CloudWatch Logs",
+      "threatAction": "access structured JSON logs containing memory IDs, user IDs, and agent IDs to map user activity",
+      "threatImpact": "exposure of user-to-memory mappings enabling targeted attacks or privacy violations",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A008"
+      ],
+      "statement": "A Insider with CloudWatch Logs read access with access to CloudWatch Logs can access structured JSON logs containing memory IDs, user IDs, and agent IDs to map user activity, which leads to exposure of user-to-memory mappings enabling targeted attacks or privacy violations",
+      "displayOrder": 10,
+      "status": "threatIdentified",
+      "tags": [
+        "STRIDE-I",
+        "Logging",
+        "PII"
+      ],
+      "metadata": []
+    },
+    {
+      "id": "9bb3ee5e-1308-476c-90c0-73a011bab76f",
+      "numericId": 11,
+      "threatSource": "Supply chain attacker targeting Python package ecosystem",
+      "prerequisites": "with ability to publish malicious Python packages",
+      "threatAction": "compromise a Python dependency (boto3, botocore) to inject code that exfiltrates credentials or data",
+      "threatImpact": "full compromise of Lambda execution environment, credential theft, data exfiltration",
+      "impactedGoal": [],
+      "impactedAssets": [
+        "A011"
+      ],
+      "statement": "A Supply chain attacker targeting Python package ecosystem with ability to publish malicious Python packages can compromise a Python dependency (boto3, botocore) to inject code that exfiltrates credentials or data, which leads to full compromise of Lambda execution environment, credential theft, data exfiltration",
+      "displayOrder": 11,
+      "status": "threatIdentified",
+      "tags": [
+        "STRIDE-E",
+        "Supply-Chain",
+        "Dependencies"
+      ],
+      "metadata": []
+    }
+  ]
+}

@@ -23,6 +23,7 @@ An automated memory lifecycle management system for AI agents built on AWS. This
 - [GDPR Deletion](#gdpr-deletion)
 - [Cleanup](#cleanup)
 - [Security](#security)
+- [Production Considerations](#production-considerations)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -338,6 +339,16 @@ This will delete the CloudFormation stack and all associated resources including
 - The Bedrock IAM policy is scoped to the specific foundation model configured via `bedrockModelId`.
 - The CloudTrail S3 bucket enforces SSL, uses S3-managed encryption, and blocks all public access.
 - CloudTrail file validation is enabled to detect log tampering.
+
+## Production Considerations
+
+This sample deploys with sensible defaults for demonstration purposes. Before running in production, consider the following hardening recommendations (surfaced by [cdk-nag](https://github.com/cdklabs/cdk-nag)):
+
+| cdk-nag Rule | Resource | Recommendation |
+|---|---|---|
+| S1 | TrailBucket, RunOutputBucket | Enable [S3 server access logging](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerLogs.html) to track requests to these buckets. |
+| SNS3 | FailureTopic | Add a resource policy that enforces `aws:SecureTransport` to reject non-TLS publish requests. |
+| SF1 | StateMachine | Enable [CloudWatch Logs](https://docs.aws.amazon.com/step-functions/latest/dg/cw-logs.html) with log level `ALL` for full execution audit trail. |
 
 ## Contributing
 
