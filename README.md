@@ -1,5 +1,7 @@
 # Designing memory lifecycle policies for Amazon Bedrock AgentCore
 
+> **Important:** This is sample code for non-production usage. You should work with your security and legal teams to meet your organizational security, regulatory, and compliance requirements before deployment.
+
 An automated memory lifecycle management system for AI agents built on AWS. This solution scores, consolidates, prunes, and deletes agent memories using a nightly Step Functions workflow, with GDPR right-to-be-forgotten support and full observability through CloudWatch and CloudTrail.
 
 ## Table of Contents

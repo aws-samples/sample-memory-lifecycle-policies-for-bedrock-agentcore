@@ -12,6 +12,8 @@ import * as cloudtrail from 'aws-cdk-lib/aws-cloudtrail';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
 import * as path from 'path';
+import { Aspects } from 'aws-cdk-lib';
+import { AwsSolutionsChecks, NagSuppressions } from 'cdk-nag';
 
 export class MemoryLifecycleStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -542,5 +544,50 @@ export class MemoryLifecycleStack extends cdk.Stack {
         removalPolicy: cdk.RemovalPolicy.DESTROY,
       });
     }
+
+    // ---------------------
+    // cdk-nag — AWS Solutions Checks
+    // ---------------------
+    Aspects.of(this).add(new AwsSolutionsChecks({ verbose: true }));
+
+    // Suppress acceptable findings for this sample
+    NagSuppressions.addStackSuppressions(this, [
+      {
+        id: 'AwsSolutions-IAM4',
+        reason: 'AWSLambdaBasicExecutionRole is required for CloudWatch Logs access and is the minimal managed policy for Lambda.',
+      },
+      {
+        id: 'AwsSolutions-IAM5',
+        reason: 'Wildcard permissions are scoped to specific resource ARN patterns (e.g., memory/*, ledger/*) and are required for AgentCore Memory operations across dynamic resource IDs.',
+      },
+      {
+        id: 'AwsSolutions-L1',
+        reason: 'Python 3.12 is the latest supported Lambda runtime for this project.',
+      },
+      {
+        id: 'AwsSolutions-SF1',
+        reason: 'Step Functions logging is not enabled to reduce cost for this sample. Enable for production use.',
+      },
+      {
+        id: 'AwsSolutions-SF2',
+        reason: 'X-Ray tracing is enabled via tracingEnabled property on the state machine.',
+      },
+      {
+        id: 'AwsSolutions-SNS2',
+        reason: 'SNS topic encryption is not enabled to simplify this sample. Enable KMS encryption for production use.',
+      },
+      {
+        id: 'AwsSolutions-SNS3',
+        reason: 'SNS topic does not require SSL enforcement for this sample notification use case.',
+      },
+      {
+        id: 'AwsSolutions-S1',
+        reason: 'S3 server access logging is not enabled to reduce cost for this sample. Enable for production use.',
+      },
+      {
+        id: 'AwsSolutions-CB4',
+        reason: 'CloudWatch Metrics wildcard resource is required as PutMetricData does not support resource-level permissions.',
+      },
+    ]);
   }
 }
