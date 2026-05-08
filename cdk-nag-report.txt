@@ -1,0 +1,1056 @@
+Description: Agent Memory Lifecycle — scoring, consolidation, pruning, and GDPR deletion
+Metadata:
+  cdk_nag:
+    rules_to_suppress:
+      - reason: AWSLambdaBasicExecutionRole is required for CloudWatch Logs access and is the minimal managed policy for Lambda.
+        id: AwsSolutions-IAM4
+      - reason: Wildcard permissions are scoped to specific resource ARN patterns (e.g., memory/*, ledger/*) and are required for AgentCore Memory operations across dynamic resource IDs.
+        id: AwsSolutions-IAM5
+      - reason: Python 3.12 is the latest supported Lambda runtime for this project.
+        id: AwsSolutions-L1
+      - reason: Step Functions logging is not enabled to reduce cost for this sample. Enable for production use.
+        id: AwsSolutions-SF1
+      - reason: X-Ray tracing is enabled via tracingEnabled property on the state machine.
+        id: AwsSolutions-SF2
+      - reason: SNS topic encryption is not enabled to simplify this sample. Enable KMS encryption for production use.
+        id: AwsSolutions-SNS2
+      - reason: SNS topic does not require SSL enforcement for this sample notification use case.
+        id: AwsSolutions-SNS3
+      - reason: S3 server access logging is not enabled to reduce cost for this sample. Enable for production use.
+        id: AwsSolutions-S1
+      - reason: CloudWatch Metrics wildcard resource is required as PutMetricData does not support resource-level permissions.
+        id: AwsSolutions-CB4
+Resources:
+  MemoryLifecycleTrailBucketB6F39125:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: aws-cdk:auto-delete-objects
+          Value: "true"
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryLifecycleTrailBucket/Resource
+  MemoryLifecycleTrailBucketPolicyBA8F5B4B:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: MemoryLifecycleTrailBucketB6F39125
+      PolicyDocument:
+        Statement:
+          - Action: s3:*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+            Effect: Deny
+            Principal:
+              AWS: "*"
+            Resource:
+              - Fn::GetAtt:
+                  - MemoryLifecycleTrailBucketB6F39125
+                  - Arn
+              - Fn::Join:
+                  - ""
+                  - - Fn::GetAtt:
+                        - MemoryLifecycleTrailBucketB6F39125
+                        - Arn
+                    - /*
+          - Action:
+              - s3:PutBucketPolicy
+              - s3:GetBucket*
+              - s3:List*
+              - s3:DeleteObject*
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::GetAtt:
+                  - CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092
+                  - Arn
+            Resource:
+              - Fn::GetAtt:
+                  - MemoryLifecycleTrailBucketB6F39125
+                  - Arn
+              - Fn::Join:
+                  - ""
+                  - - Fn::GetAtt:
+                        - MemoryLifecycleTrailBucketB6F39125
+                        - Arn
+                    - /*
+          - Action: s3:GetBucketAcl
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Resource:
+              Fn::GetAtt:
+                - MemoryLifecycleTrailBucketB6F39125
+                - Arn
+          - Action: s3:PutObject
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Resource:
+              Fn::Join:
+                - ""
+                - - Fn::GetAtt:
+                      - MemoryLifecycleTrailBucketB6F39125
+                      - Arn
+                  - /AWSLogs/
+                  - Ref: AWS::AccountId
+                  - /*
+        Version: "2012-10-17"
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryLifecycleTrailBucket/Policy/Resource
+  MemoryLifecycleTrailBucketAutoDeleteObjectsCustomResource766B341C:
+    Type: Custom::S3AutoDeleteObjects
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+          - CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F
+          - Arn
+      BucketName:
+        Ref: MemoryLifecycleTrailBucketB6F39125
+    DependsOn:
+      - MemoryLifecycleTrailBucketPolicyBA8F5B4B
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryLifecycleTrailBucket/AutoDeleteObjectsCustomResource/Default
+  CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+      ManagedPolicyArns:
+        - Fn::Sub: arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/Custom::S3AutoDeleteObjectsCustomResourceProvider/Role
+  CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket:
+          Fn::Sub: cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1
+        S3Key: faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6.zip
+      Timeout: 900
+      MemorySize: 128
+      Handler: index.handler
+      Role:
+        Fn::GetAtt:
+          - CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092
+          - Arn
+      Runtime: nodejs22.x
+      Description:
+        Fn::Join:
+          - ""
+          - - "Lambda function for auto-deleting objects in "
+            - Ref: MemoryLifecycleTrailBucketB6F39125
+            - " S3 bucket."
+    DependsOn:
+      - CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/Custom::S3AutoDeleteObjectsCustomResourceProvider/Handler
+      aws:asset:path: asset.faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6
+      aws:asset:property: Code
+  RunOutputBucketD23D1DE9:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: aws-cdk:auto-delete-objects
+          Value: "true"
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/RunOutputBucket/Resource
+  RunOutputBucketPolicy3B61FE87:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: RunOutputBucketD23D1DE9
+      PolicyDocument:
+        Statement:
+          - Action: s3:*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+            Effect: Deny
+            Principal:
+              AWS: "*"
+            Resource:
+              - Fn::GetAtt:
+                  - RunOutputBucketD23D1DE9
+                  - Arn
+              - Fn::Join:
+                  - ""
+                  - - Fn::GetAtt:
+                        - RunOutputBucketD23D1DE9
+                        - Arn
+                    - /*
+          - Action:
+              - s3:PutBucketPolicy
+              - s3:GetBucket*
+              - s3:List*
+              - s3:DeleteObject*
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::GetAtt:
+                  - CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092
+                  - Arn
+            Resource:
+              - Fn::GetAtt:
+                  - RunOutputBucketD23D1DE9
+                  - Arn
+              - Fn::Join:
+                  - ""
+                  - - Fn::GetAtt:
+                        - RunOutputBucketD23D1DE9
+                        - Arn
+                    - /*
+        Version: "2012-10-17"
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/RunOutputBucket/Policy/Resource
+  RunOutputBucketAutoDeleteObjectsCustomResource93E86A71:
+    Type: Custom::S3AutoDeleteObjects
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+          - CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F
+          - Arn
+      BucketName:
+        Ref: RunOutputBucketD23D1DE9
+    DependsOn:
+      - RunOutputBucketPolicy3B61FE87
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/RunOutputBucket/AutoDeleteObjectsCustomResource/Default
+  SharedLayer27DFABF0:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+        - python3.12
+      Content:
+        S3Bucket:
+          Fn::Sub: cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1
+        S3Key: 33dc23ddd8f0fed83c992eaad9be2d90b386e49349128f43bdffd554fcb3c81e.zip
+      Description: Shared constants and models for memory lifecycle Lambdas
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/SharedLayer/Resource
+      aws:asset:path: asset.33dc23ddd8f0fed83c992eaad9be2d90b386e49349128f43bdffd554fcb3c81e
+      aws:asset:is-bundled: true
+      aws:asset:property: Content
+  MemoryScorerFunctionServiceRoleF6026B2A:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryScorerFunction/ServiceRole/Resource
+  MemoryScorerFunctionServiceRoleDefaultPolicy578073AC:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: bedrock-agentcore:ListMemoryRecords
+            Effect: Allow
+            Resource:
+              Fn::Join:
+                - ""
+                - - "arn:aws:bedrock-agentcore:us-east-1:"
+                  - Ref: AWS::AccountId
+                  - :memory/*
+          - Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Effect: Allow
+            Resource:
+              - Fn::GetAtt:
+                  - MemoryLifecycleTrailBucketB6F39125
+                  - Arn
+              - Fn::Join:
+                  - ""
+                  - - Fn::GetAtt:
+                        - MemoryLifecycleTrailBucketB6F39125
+                        - Arn
+                    - /*
+          - Action:
+              - s3:GetObject
+              - s3:PutObject
+            Effect: Allow
+            Resource:
+              Fn::Join:
+                - ""
+                - - Fn::GetAtt:
+                      - RunOutputBucketD23D1DE9
+                      - Arn
+                  - /ledger/*
+        Version: "2012-10-17"
+      PolicyName: MemoryScorerFunctionServiceRoleDefaultPolicy578073AC
+      Roles:
+        - Ref: MemoryScorerFunctionServiceRoleF6026B2A
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryScorerFunction/ServiceRole/DefaultPolicy/Resource
+  MemoryScorerFunctionF3F1B9CA:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket:
+          Fn::Sub: cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1
+        S3Key: 90220bcf1484c75cd227550521e06466835778b1e45ab2ccecf953bee8445bb2.zip
+      Environment:
+        Variables:
+          MEMORY_TTL_DAYS: "90"
+          RELEVANCE_THRESHOLD: "0.3"
+          CONSOLIDATION_BATCH_SIZE: "10"
+          BEDROCK_MODEL_ID: anthropic.claude-sonnet-4-5-20250929-v1:0
+          PRUNE_DAYS: "45"
+          TRAIL_BUCKET_NAME:
+            Ref: MemoryLifecycleTrailBucketB6F39125
+          TRAIL_LOOKBACK_HOURS: "25"
+          W_RECENCY: "0.4"
+          W_ACCESS: "0.35"
+          W_FREQUENCY: "0.25"
+          MAX_ACCESS_BASELINE: "50"
+          AWS_ACCOUNT_ID:
+            Ref: AWS::AccountId
+          RUN_OUTPUT_BUCKET_NAME:
+            Ref: RunOutputBucketD23D1DE9
+      Handler: handler.handler
+      Layers:
+        - Ref: SharedLayer27DFABF0
+      Role:
+        Fn::GetAtt:
+          - MemoryScorerFunctionServiceRoleF6026B2A
+          - Arn
+      Runtime: python3.12
+      Timeout: 300
+    DependsOn:
+      - MemoryScorerFunctionServiceRoleDefaultPolicy578073AC
+      - MemoryScorerFunctionServiceRoleF6026B2A
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryScorerFunction/Resource
+      aws:asset:path: asset.90220bcf1484c75cd227550521e06466835778b1e45ab2ccecf953bee8445bb2
+      aws:asset:is-bundled: false
+      aws:asset:property: Code
+  MemoryConsolidatorFunctionServiceRoleD5E40E81:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryConsolidatorFunction/ServiceRole/Resource
+  MemoryConsolidatorFunctionServiceRoleDefaultPolicy1F889BCA:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - bedrock-agentcore:GetMemoryRecord
+              - bedrock-agentcore:BatchCreateMemoryRecords
+              - bedrock-agentcore:DeleteMemoryRecord
+            Effect: Allow
+            Resource:
+              Fn::Join:
+                - ""
+                - - "arn:aws:bedrock-agentcore:us-east-1:"
+                  - Ref: AWS::AccountId
+                  - :memory/*
+          - Action: bedrock:InvokeModel
+            Effect: Allow
+            Resource: arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0
+        Version: "2012-10-17"
+      PolicyName: MemoryConsolidatorFunctionServiceRoleDefaultPolicy1F889BCA
+      Roles:
+        - Ref: MemoryConsolidatorFunctionServiceRoleD5E40E81
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryConsolidatorFunction/ServiceRole/DefaultPolicy/Resource
+  MemoryConsolidatorFunctionDC38F78B:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket:
+          Fn::Sub: cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1
+        S3Key: 6280ccab74ee93d98f042f2e17c774dbfd2067071d071bbca4cd390d05a862c3.zip
+      Environment:
+        Variables:
+          MEMORY_TTL_DAYS: "90"
+          RELEVANCE_THRESHOLD: "0.3"
+          CONSOLIDATION_BATCH_SIZE: "10"
+          BEDROCK_MODEL_ID: anthropic.claude-sonnet-4-5-20250929-v1:0
+          PRUNE_DAYS: "45"
+      Handler: handler.handler
+      Layers:
+        - Ref: SharedLayer27DFABF0
+      Role:
+        Fn::GetAtt:
+          - MemoryConsolidatorFunctionServiceRoleD5E40E81
+          - Arn
+      Runtime: python3.12
+      Timeout: 600
+    DependsOn:
+      - MemoryConsolidatorFunctionServiceRoleDefaultPolicy1F889BCA
+      - MemoryConsolidatorFunctionServiceRoleD5E40E81
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryConsolidatorFunction/Resource
+      aws:asset:path: asset.6280ccab74ee93d98f042f2e17c774dbfd2067071d071bbca4cd390d05a862c3
+      aws:asset:is-bundled: false
+      aws:asset:property: Code
+  MemoryPrunerFunctionServiceRole5C5A03C8:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryPrunerFunction/ServiceRole/Resource
+  MemoryPrunerFunctionServiceRoleDefaultPolicy00D0BA28:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - bedrock-agentcore:ListMemoryRecords
+              - bedrock-agentcore:DeleteMemoryRecord
+            Effect: Allow
+            Resource:
+              Fn::Join:
+                - ""
+                - - "arn:aws:bedrock-agentcore:us-east-1:"
+                  - Ref: AWS::AccountId
+                  - :memory/*
+        Version: "2012-10-17"
+      PolicyName: MemoryPrunerFunctionServiceRoleDefaultPolicy00D0BA28
+      Roles:
+        - Ref: MemoryPrunerFunctionServiceRole5C5A03C8
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryPrunerFunction/ServiceRole/DefaultPolicy/Resource
+  MemoryPrunerFunction2D4EF82E:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket:
+          Fn::Sub: cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1
+        S3Key: e79c268490e75fa5ec67726b69a1220d4b26222104fc295953569420304214e0.zip
+      Environment:
+        Variables:
+          MEMORY_TTL_DAYS: "90"
+          RELEVANCE_THRESHOLD: "0.3"
+          CONSOLIDATION_BATCH_SIZE: "10"
+          BEDROCK_MODEL_ID: anthropic.claude-sonnet-4-5-20250929-v1:0
+          PRUNE_DAYS: "45"
+      Handler: handler.handler
+      Layers:
+        - Ref: SharedLayer27DFABF0
+      Role:
+        Fn::GetAtt:
+          - MemoryPrunerFunctionServiceRole5C5A03C8
+          - Arn
+      Runtime: python3.12
+      Timeout: 300
+    DependsOn:
+      - MemoryPrunerFunctionServiceRoleDefaultPolicy00D0BA28
+      - MemoryPrunerFunctionServiceRole5C5A03C8
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryPrunerFunction/Resource
+      aws:asset:path: asset.e79c268490e75fa5ec67726b69a1220d4b26222104fc295953569420304214e0
+      aws:asset:is-bundled: false
+      aws:asset:property: Code
+  GDPRDeletionFunctionServiceRole530A4276:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/GDPRDeletionFunction/ServiceRole/Resource
+  GDPRDeletionFunctionServiceRoleDefaultPolicyB6A05ACB:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - bedrock-agentcore:ListMemoryRecords
+              - bedrock-agentcore:DeleteMemoryRecord
+            Effect: Allow
+            Resource:
+              Fn::Join:
+                - ""
+                - - "arn:aws:bedrock-agentcore:us-east-1:"
+                  - Ref: AWS::AccountId
+                  - :memory/*
+        Version: "2012-10-17"
+      PolicyName: GDPRDeletionFunctionServiceRoleDefaultPolicyB6A05ACB
+      Roles:
+        - Ref: GDPRDeletionFunctionServiceRole530A4276
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/GDPRDeletionFunction/ServiceRole/DefaultPolicy/Resource
+  GDPRDeletionFunction4D0B55DE:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket:
+          Fn::Sub: cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1
+        S3Key: e74c77c687eee85a479329c47dec5dc4a11cdc7a349f5ac94d18e48c76d35a81.zip
+      Environment:
+        Variables:
+          MEMORY_TTL_DAYS: "90"
+          RELEVANCE_THRESHOLD: "0.3"
+          CONSOLIDATION_BATCH_SIZE: "10"
+          BEDROCK_MODEL_ID: anthropic.claude-sonnet-4-5-20250929-v1:0
+          PRUNE_DAYS: "45"
+      Handler: handler.handler
+      Layers:
+        - Ref: SharedLayer27DFABF0
+      Role:
+        Fn::GetAtt:
+          - GDPRDeletionFunctionServiceRole530A4276
+          - Arn
+      Runtime: python3.12
+      Timeout: 600
+    DependsOn:
+      - GDPRDeletionFunctionServiceRoleDefaultPolicyB6A05ACB
+      - GDPRDeletionFunctionServiceRole530A4276
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/GDPRDeletionFunction/Resource
+      aws:asset:path: asset.e74c77c687eee85a479329c47dec5dc4a11cdc7a349f5ac94d18e48c76d35a81
+      aws:asset:is-bundled: false
+      aws:asset:property: Code
+  MetricsEmitterFunctionServiceRoleE2968D6F:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MetricsEmitterFunction/ServiceRole/Resource
+  MetricsEmitterFunctionServiceRoleDefaultPolicy776523FF:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: cloudwatch:PutMetricData
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: MetricsEmitterFunctionServiceRoleDefaultPolicy776523FF
+      Roles:
+        - Ref: MetricsEmitterFunctionServiceRoleE2968D6F
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MetricsEmitterFunction/ServiceRole/DefaultPolicy/Resource
+  MetricsEmitterFunctionC3B2531F:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket:
+          Fn::Sub: cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1
+        S3Key: 1882f0d4a6a6303cd1ab5d1bcdc57f19fe9199ec3f796d75c5b15191ec6ca062.zip
+      Handler: handler.handler
+      Layers:
+        - Ref: SharedLayer27DFABF0
+      Role:
+        Fn::GetAtt:
+          - MetricsEmitterFunctionServiceRoleE2968D6F
+          - Arn
+      Runtime: python3.12
+      Timeout: 30
+    DependsOn:
+      - MetricsEmitterFunctionServiceRoleDefaultPolicy776523FF
+      - MetricsEmitterFunctionServiceRoleE2968D6F
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MetricsEmitterFunction/Resource
+      aws:asset:path: asset.1882f0d4a6a6303cd1ab5d1bcdc57f19fe9199ec3f796d75c5b15191ec6ca062
+      aws:asset:is-bundled: false
+      aws:asset:property: Code
+  RunOutputWriterFunctionServiceRole9FFE02AB:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/RunOutputWriterFunction/ServiceRole/Resource
+  RunOutputWriterFunctionServiceRoleDefaultPolicy8D6933D6:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: s3:PutObject
+            Effect: Allow
+            Resource:
+              Fn::Join:
+                - ""
+                - - Fn::GetAtt:
+                      - RunOutputBucketD23D1DE9
+                      - Arn
+                  - /*
+        Version: "2012-10-17"
+      PolicyName: RunOutputWriterFunctionServiceRoleDefaultPolicy8D6933D6
+      Roles:
+        - Ref: RunOutputWriterFunctionServiceRole9FFE02AB
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/RunOutputWriterFunction/ServiceRole/DefaultPolicy/Resource
+  RunOutputWriterFunction4991B22B:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket:
+          Fn::Sub: cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1
+        S3Key: a79738cb968d1f4a781bbb50e38d4bb5e49a51c4010b84a9186c5f1ec6516845.zip
+      Environment:
+        Variables:
+          RUN_OUTPUT_BUCKET_NAME:
+            Ref: RunOutputBucketD23D1DE9
+      Handler: handler.handler
+      Layers:
+        - Ref: SharedLayer27DFABF0
+      Role:
+        Fn::GetAtt:
+          - RunOutputWriterFunctionServiceRole9FFE02AB
+          - Arn
+      Runtime: python3.12
+      Timeout: 30
+    DependsOn:
+      - RunOutputWriterFunctionServiceRoleDefaultPolicy8D6933D6
+      - RunOutputWriterFunctionServiceRole9FFE02AB
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/RunOutputWriterFunction/Resource
+      aws:asset:path: asset.a79738cb968d1f4a781bbb50e38d4bb5e49a51c4010b84a9186c5f1ec6516845
+      aws:asset:is-bundled: false
+      aws:asset:property: Code
+  MemoryLifecycleFailureTopic5507CE0B:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Memory Lifecycle Workflow Failure Notifications
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryLifecycleFailureTopic/Resource
+  MemoryLifecycleStateMachineRoleEDA37E4A:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+        Version: "2012-10-17"
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryLifecycleStateMachine/Role/Resource
+  MemoryLifecycleStateMachineRoleDefaultPolicyA298BD4B:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: lambda:InvokeFunction
+            Effect: Allow
+            Resource:
+              - Fn::GetAtt:
+                  - MemoryPrunerFunction2D4EF82E
+                  - Arn
+              - Fn::Join:
+                  - ""
+                  - - Fn::GetAtt:
+                        - MemoryPrunerFunction2D4EF82E
+                        - Arn
+                    - :*
+          - Action: lambda:InvokeFunction
+            Effect: Allow
+            Resource:
+              - Fn::GetAtt:
+                  - MemoryScorerFunctionF3F1B9CA
+                  - Arn
+              - Fn::Join:
+                  - ""
+                  - - Fn::GetAtt:
+                        - MemoryScorerFunctionF3F1B9CA
+                        - Arn
+                    - :*
+          - Action: lambda:InvokeFunction
+            Effect: Allow
+            Resource:
+              - Fn::GetAtt:
+                  - MetricsEmitterFunctionC3B2531F
+                  - Arn
+              - Fn::Join:
+                  - ""
+                  - - Fn::GetAtt:
+                        - MetricsEmitterFunctionC3B2531F
+                        - Arn
+                    - :*
+          - Action: sns:Publish
+            Effect: Allow
+            Resource:
+              Ref: MemoryLifecycleFailureTopic5507CE0B
+          - Action: lambda:InvokeFunction
+            Effect: Allow
+            Resource:
+              - Fn::GetAtt:
+                  - RunOutputWriterFunction4991B22B
+                  - Arn
+              - Fn::Join:
+                  - ""
+                  - - Fn::GetAtt:
+                        - RunOutputWriterFunction4991B22B
+                        - Arn
+                    - :*
+          - Action: lambda:InvokeFunction
+            Effect: Allow
+            Resource:
+              - Fn::GetAtt:
+                  - MemoryConsolidatorFunctionDC38F78B
+                  - Arn
+              - Fn::Join:
+                  - ""
+                  - - Fn::GetAtt:
+                        - MemoryConsolidatorFunctionDC38F78B
+                        - Arn
+                    - :*
+          - Action:
+              - xray:PutTraceSegments
+              - xray:PutTelemetryRecords
+              - xray:GetSamplingRules
+              - xray:GetSamplingTargets
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: MemoryLifecycleStateMachineRoleDefaultPolicyA298BD4B
+      Roles:
+        - Ref: MemoryLifecycleStateMachineRoleEDA37E4A
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryLifecycleStateMachine/Role/DefaultPolicy/Resource
+  MemoryLifecycleStateMachine37FB0D1D:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      DefinitionString:
+        Fn::Join:
+          - ""
+          - - '{"StartAt":"TTLExpiration","States":{"TTLExpiration":{"Next":"ScoreMemories","Retry":[{"ErrorEquals":["Lambda.ClientExecutionTimeoutException","Lambda.ServiceException","Lambda.AWSLambdaException","Lambda.SdkClientException"],"IntervalSeconds":2,"MaxAttempts":6,"BackoffRate":2},{"ErrorEquals":["States.TaskFailed","States.Timeout"],"IntervalSeconds":5,"MaxAttempts":2,"BackoffRate":2}],"Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.errorInfo","Next":"FormatTTLExpirationFailure"}],"Type":"Task","ResultPath":"$.ttlResult","Resource":"'
+            - Fn::GetAtt:
+                - MemoryPrunerFunction2D4EF82E
+                - Arn
+            - '"},"ScoreMemories":{"Next":"CheckLowScoreMemories","Retry":[{"ErrorEquals":["Lambda.ClientExecutionTimeoutException","Lambda.ServiceException","Lambda.AWSLambdaException","Lambda.SdkClientException"],"IntervalSeconds":2,"MaxAttempts":6,"BackoffRate":2},{"ErrorEquals":["States.TaskFailed","States.Timeout"],"IntervalSeconds":5,"MaxAttempts":2,"BackoffRate":2}],"Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.errorInfo","Next":"FormatScoreMemoriesFailure"}],"Type":"Task","ResultPath":"$.scoringResult","Resource":"'
+            - Fn::GetAtt:
+                - MemoryScorerFunctionF3F1B9CA
+                - Arn
+            - '"},"CheckLowScoreMemories":{"Type":"Choice","Choices":[{"Variable":"$.scoringResult.below_threshold[0]","IsPresent":true,"Next":"BatchConsolidate"}],"Default":"EmitMetrics"},"EmitMetrics":{"Next":"WriteRunOutput","Retry":[{"ErrorEquals":["Lambda.ClientExecutionTimeoutException","Lambda.ServiceException","Lambda.AWSLambdaException","Lambda.SdkClientException"],"IntervalSeconds":2,"MaxAttempts":6,"BackoffRate":2},{"ErrorEquals":["States.TaskFailed","States.Timeout"],"IntervalSeconds":5,"MaxAttempts":2,"BackoffRate":2}],"Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.errorInfo","Next":"FormatEmitMetricsFailure"}],"Type":"Task","ResultPath":"$.metricsResult","Resource":"'
+            - Fn::GetAtt:
+                - MetricsEmitterFunctionC3B2531F
+                - Arn
+            - '"},"BatchConsolidate":{"Type":"Map","ResultPath":"$.consolidationResults","Next":"EmitMetrics","Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.errorInfo","Next":"FormatBatchConsolidateFailure"}],"ItemsPath":"$.scoringResult.below_threshold","ItemProcessor":{"ProcessorConfig":{"Mode":"INLINE"},"StartAt":"ConsolidateMemoryBatch","States":{"ConsolidateMemoryBatch":{"End":true,"Retry":[{"ErrorEquals":["Lambda.ClientExecutionTimeoutException","Lambda.ServiceException","Lambda.AWSLambdaException","Lambda.SdkClientException"],"IntervalSeconds":2,"MaxAttempts":6,"BackoffRate":2},{"ErrorEquals":["States.TaskFailed","States.Timeout"],"IntervalSeconds":5,"MaxAttempts":2,"BackoffRate":2}],"Type":"Task","Resource":"'
+            - Fn::GetAtt:
+                - MemoryConsolidatorFunctionDC38F78B
+                - Arn
+            - '"}}},"MaxConcurrency":1},"FormatBatchConsolidateFailure":{"Type":"Pass","Parameters":{"stepName":"BatchConsolidate","error.$":"$.errorInfo.Error","cause.$":"$.errorInfo.Cause"},"Next":"HandleFailure"},"HandleFailure":{"End":true,"Type":"Task","ResultPath":null,"Resource":"arn:'
+            - Ref: AWS::Partition
+            - :states:::sns:publish","Parameters":{"TopicArn":"
+            - Ref: MemoryLifecycleFailureTopic5507CE0B
+            - '","Message":{"step.$":"$.stepName","error.$":"$.error","cause.$":"$.cause"}}},"FormatTTLExpirationFailure":{"Type":"Pass","Parameters":{"stepName":"TTLExpiration","error.$":"$.errorInfo.Error","cause.$":"$.errorInfo.Cause"},"Next":"HandleFailure"},"FormatScoreMemoriesFailure":{"Type":"Pass","Parameters":{"stepName":"ScoreMemories","error.$":"$.errorInfo.Error","cause.$":"$.errorInfo.Cause"},"Next":"HandleFailure"},"FormatEmitMetricsFailure":{"Type":"Pass","Parameters":{"stepName":"EmitMetrics","error.$":"$.errorInfo.Error","cause.$":"$.errorInfo.Cause"},"Next":"HandleFailure"},"FormatWriteRunOutputFailure":{"Type":"Pass","Parameters":{"stepName":"WriteRunOutput","error.$":"$.errorInfo.Error","cause.$":"$.errorInfo.Cause"},"Next":"HandleFailure"},"WriteRunOutput":{"End":true,"Retry":[{"ErrorEquals":["Lambda.ClientExecutionTimeoutException","Lambda.ServiceException","Lambda.AWSLambdaException","Lambda.SdkClientException"],"IntervalSeconds":2,"MaxAttempts":6,"BackoffRate":2},{"ErrorEquals":["States.TaskFailed","States.Timeout"],"IntervalSeconds":5,"MaxAttempts":2,"BackoffRate":2}],"Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.errorInfo","Next":"FormatWriteRunOutputFailure"}],"Type":"Task","ResultPath":"$.runOutputResult","Resource":"'
+            - Fn::GetAtt:
+                - RunOutputWriterFunction4991B22B
+                - Arn
+            - '"}},"TimeoutSeconds":3600}'
+      RoleArn:
+        Fn::GetAtt:
+          - MemoryLifecycleStateMachineRoleEDA37E4A
+          - Arn
+      TracingConfiguration:
+        Enabled: true
+    DependsOn:
+      - MemoryLifecycleStateMachineRoleDefaultPolicyA298BD4B
+      - MemoryLifecycleStateMachineRoleEDA37E4A
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryLifecycleStateMachine/Resource
+  MemoryLifecycleStateMachineEventsRoleD3DA422F:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+        Version: "2012-10-17"
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryLifecycleStateMachine/EventsRole/Resource
+  MemoryLifecycleStateMachineEventsRoleDefaultPolicy2DB880A0:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: states:StartExecution
+            Effect: Allow
+            Resource:
+              Ref: MemoryLifecycleStateMachine37FB0D1D
+        Version: "2012-10-17"
+      PolicyName: MemoryLifecycleStateMachineEventsRoleDefaultPolicy2DB880A0
+      Roles:
+        - Ref: MemoryLifecycleStateMachineEventsRoleD3DA422F
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryLifecycleStateMachine/EventsRole/DefaultPolicy/Resource
+  NightlyMemoryLifecycleRuleD5FAC01B:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Triggers the Memory Lifecycle workflow nightly at 2 AM UTC
+      ScheduleExpression: cron(0 2 * * ? *)
+      State: ENABLED
+      Targets:
+        - Arn:
+            Ref: MemoryLifecycleStateMachine37FB0D1D
+          Id: Target0
+          RoleArn:
+            Fn::GetAtt:
+              - MemoryLifecycleStateMachineEventsRoleD3DA422F
+              - Arn
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/NightlyMemoryLifecycleRule/Resource
+  MemoryLifecycleDashboard8B627ABC:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardBody:
+        Fn::Join:
+          - ""
+          - - '{"widgets":[{"type":"metric","width":12,"height":6,"x":0,"y":0,"properties":{"view":"timeSeries","title":"Step Functions Workflow Executions","region":"'
+            - Ref: AWS::Region
+            - '","metrics":[["AWS/States","ExecutionsStarted","StateMachineArn","'
+            - Ref: MemoryLifecycleStateMachine37FB0D1D
+            - '",{"period":3600,"stat":"Sum"}],["AWS/States","ExecutionsSucceeded","StateMachineArn","'
+            - Ref: MemoryLifecycleStateMachine37FB0D1D
+            - '",{"period":3600,"stat":"Sum"}],["AWS/States","ExecutionsFailed","StateMachineArn","'
+            - Ref: MemoryLifecycleStateMachine37FB0D1D
+            - '",{"period":3600,"stat":"Sum"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":0,"y":6,"properties":{"view":"timeSeries","title":"Lambda Invocations","region":"'
+            - Ref: AWS::Region
+            - '","metrics":[["AWS/Lambda","Invocations","FunctionName","'
+            - Ref: MemoryScorerFunctionF3F1B9CA
+            - '",{"period":3600,"stat":"Sum"}],["AWS/Lambda","Invocations","FunctionName","'
+            - Ref: MemoryConsolidatorFunctionDC38F78B
+            - '",{"period":3600,"stat":"Sum"}],["AWS/Lambda","Invocations","FunctionName","'
+            - Ref: MemoryPrunerFunction2D4EF82E
+            - '",{"period":3600,"stat":"Sum"}],["AWS/Lambda","Invocations","FunctionName","'
+            - Ref: GDPRDeletionFunction4D0B55DE
+            - '",{"period":3600,"stat":"Sum"}],["AWS/Lambda","Invocations","FunctionName","'
+            - Ref: MetricsEmitterFunctionC3B2531F
+            - '",{"period":3600,"stat":"Sum"}],["AWS/Lambda","Invocations","FunctionName","'
+            - Ref: RunOutputWriterFunction4991B22B
+            - '",{"period":3600,"stat":"Sum"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":12,"y":6,"properties":{"view":"timeSeries","title":"Lambda Errors","region":"'
+            - Ref: AWS::Region
+            - '","metrics":[["AWS/Lambda","Errors","FunctionName","'
+            - Ref: MemoryScorerFunctionF3F1B9CA
+            - '",{"period":3600,"stat":"Sum"}],["AWS/Lambda","Errors","FunctionName","'
+            - Ref: MemoryConsolidatorFunctionDC38F78B
+            - '",{"period":3600,"stat":"Sum"}],["AWS/Lambda","Errors","FunctionName","'
+            - Ref: MemoryPrunerFunction2D4EF82E
+            - '",{"period":3600,"stat":"Sum"}],["AWS/Lambda","Errors","FunctionName","'
+            - Ref: GDPRDeletionFunction4D0B55DE
+            - '",{"period":3600,"stat":"Sum"}],["AWS/Lambda","Errors","FunctionName","'
+            - Ref: MetricsEmitterFunctionC3B2531F
+            - '",{"period":3600,"stat":"Sum"}],["AWS/Lambda","Errors","FunctionName","'
+            - Ref: RunOutputWriterFunction4991B22B
+            - '",{"period":3600,"stat":"Sum"}]],"yAxis":{}}},{"type":"metric","width":24,"height":6,"x":0,"y":12,"properties":{"view":"timeSeries","title":"Memory Lifecycle Custom Metrics","region":"'
+            - Ref: AWS::Region
+            - '","metrics":[["MemoryLifecycle","MemoriesProcessed",{"period":3600,"stat":"Sum"}],["MemoryLifecycle","MemoriesConsolidated",{"period":3600,"stat":"Sum"}],["MemoryLifecycle","MemoriesPruned",{"period":3600,"stat":"Sum"}],["MemoryLifecycle","WorkflowExecutionStatus",{"period":3600,"stat":"Sum","yAxis":"right"}]],"yAxis":{}}}]}'
+      DashboardName: MemoryLifecycleDashboard
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryLifecycleDashboard/Resource
+  MemoryLifecycleTrail3C617E5B:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      AdvancedEventSelectors:
+        - Name: MemoryDataEvents
+          FieldSelectors:
+            - Field: eventCategory
+              EqualTo:
+                - Data
+            - Field: resources.type
+              EqualTo:
+                - AWS::BedrockAgentCore::Memory
+      EnableLogFileValidation: true
+      EventSelectors: []
+      IncludeGlobalServiceEvents: false
+      IsLogging: true
+      IsMultiRegionTrail: false
+      S3BucketName:
+        Ref: MemoryLifecycleTrailBucketB6F39125
+      TrailName: MemoryLifecycleAuditTrail
+    DependsOn:
+      - MemoryLifecycleTrailBucketPolicyBA8F5B4B
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryLifecycleTrail/Resource
+  MemoryScorerLogGroup1D360C8C:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Join:
+          - ""
+          - - /aws/lambda/
+            - Ref: MemoryScorerFunctionF3F1B9CA
+      RetentionInDays: 30
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryScorerLogGroup/Resource
+  MemoryConsolidatorLogGroup4712D148:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Join:
+          - ""
+          - - /aws/lambda/
+            - Ref: MemoryConsolidatorFunctionDC38F78B
+      RetentionInDays: 30
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryConsolidatorLogGroup/Resource
+  MemoryPrunerLogGroupD8DA1DA8:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Join:
+          - ""
+          - - /aws/lambda/
+            - Ref: MemoryPrunerFunction2D4EF82E
+      RetentionInDays: 30
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MemoryPrunerLogGroup/Resource
+  GDPRDeletionLogGroup45CE8308:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Join:
+          - ""
+          - - /aws/lambda/
+            - Ref: GDPRDeletionFunction4D0B55DE
+      RetentionInDays: 30
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/GDPRDeletionLogGroup/Resource
+  MetricsEmitterLogGroup1F30A767:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Join:
+          - ""
+          - - /aws/lambda/
+            - Ref: MetricsEmitterFunctionC3B2531F
+      RetentionInDays: 30
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/MetricsEmitterLogGroup/Resource
+  RunOutputWriterLogGroup43A85251:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Join:
+          - ""
+          - - /aws/lambda/
+            - Ref: RunOutputWriterFunction4991B22B
+      RetentionInDays: 30
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/RunOutputWriterLogGroup/Resource
+  CDKMetadata:
+    Type: AWS::CDK::Metadata
+    Properties:
+      Analytics: v2:deflate64:H4sIAAAAAAAA/6WTTW/CMAyGf8s4h2wCLtuND22aBBqCaZdpQmlq2tA2QXECQ1H/+5K0fG0ntJNfx6+Tx67ao73BI324Y3vs8rToliKhbmkYL4g/WjnsUzeyvABDxmvZqE/XqcS3kJ2nzmVb8Ht7LCFtrENr1ARKMPCWbIAb7NTkX91fpCnNVSn44czU5DeQNQ1+UgMVyBvB/jYfuUYMoSYlq5KUUTdlB9AfoFEoGViv8mcruWkLR10T7K8YIhikwxCIYBV1C1VCsMV4Hr1RvseDuXe1FTycRuEPDWzX7bW4MgwLb1pKnNukFJiTaWR8lTtVwC83dXPPQMa5EhzIjG1JHHXGeC5kBLnMawK7sASPaVtMH2vCS2XTPTM8p27CME8U02kon5LWYzQTpR8ghDhAEH6JKvN3TlX2opXdxvW1uq7J2KJR1QJQWc2bR0/6qjTXaidS0OHDkLhSz54JmdVEqhToBu93vT4d+H9gg0J0tZVGVEAXTfwB/ecxxyADAAA=
+    Metadata:
+      aws:cdk:path: MemoryLifecycleStack/CDKMetadata/Default
+Parameters:
+  BootstrapVersion:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /cdk-bootstrap/hnb659fds/version
+    Description: Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]
+
