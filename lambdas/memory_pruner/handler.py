@@ -130,12 +130,24 @@ def handler(event: dict, context) -> dict:
         "timestamp": now.isoformat(),
     }))
 
-    # Retrieve all memory records (paginated)
+    # Retrieve expired memory records using server-side metadata filter
+    # on the system-generated x-amz-agentcore-memory-createdAt field
+    cutoff = (now - timedelta(days=ttl_days)).isoformat()
     try:
         memories = []
         next_token = None
         while True:
-            kwargs = {"memoryId": memory_id, "namespace": agent_id}
+            kwargs = {
+                "memoryId": memory_id,
+                "namespace": agent_id,
+                "metadataFilters": [
+                    {
+                        "left": {"metadataKey": "x-amz-agentcore-memory-createdAt"},
+                        "operator": "BEFORE",
+                        "right": {"metadataValue": {"dateTimeValue": cutoff}},
+                    }
+                ],
+            }
             if next_token is not None:
                 kwargs["nextToken"] = next_token
             response = client.list_memory_records(**kwargs)
@@ -159,14 +171,7 @@ def handler(event: dict, context) -> dict:
             "expired_count": 0,
         }
 
-    # Filter memories older than MEMORY_TTL_DAYS
-    cutoff = now - timedelta(days=ttl_days)
-    expired_ids = []
-    for memory in memories:
-        created_at = memory["createdAt"]
-        if created_at < cutoff:
-            expired_ids.append(memory["memoryRecordId"])
-
+    expired_ids = [m["memoryRecordId"] for m in memories]
     expired_count = len(expired_ids)
 
     logger.info(json.dumps({
